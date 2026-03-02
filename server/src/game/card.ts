@@ -60,6 +60,9 @@ class UnoGame{
     discardPile: Card[];
     currentPlayerIndex: number;
     direction: number = 1;
+    declaredColor: ColorCards | null = null;
+    winner: Player | null = null;
+
     // методы для управления игрой, например, раздача карт, обработка ходов, проверка победителя
     constructor() {
         this.players = [];
@@ -67,6 +70,8 @@ class UnoGame{
         this.discardPile = [];
         this.currentPlayerIndex = 0;
         this.direction = 1;
+        this.declaredColor = null;
+        this.winner = null; 
     }
     addPlayer(id: string, name: string) {
         const newPlayer: Player = { id, name, hand: []};
@@ -90,21 +95,23 @@ class UnoGame{
     }
     
     canPlayCard(cardToPlay: Card, topCardOnTable: Card): boolean {
+        if (cardToPlay.color === "black") {
+            return true; 
+        }
+        if (topCardOnTable.color === "black" && this.declaredColor) {
+            return cardToPlay.color === this.declaredColor || cardToPlay.value === topCardOnTable.value;
+        }
         if (cardToPlay.color === "red" || cardToPlay.color === "blue" || cardToPlay.color === "green" || cardToPlay.color === "yellow") {
             return cardToPlay.color === topCardOnTable.color || cardToPlay.value === topCardOnTable.value;
         }
-        if (cardToPlay.color == "black"){
-            return true; 
-        }
         return false;
     }
-    playCard(playerId: string, cardIndex: number) {
+    playCard(playerId: string, cardIndex: number, declaredColor?: ColorCards ) {
         // проверяем, что игрок может ходить
         const player = this.players.find(p => p.id === playerId);
         if (!player) {
             throw new Error("Player not found");
         }
-        
         const playerIndex = this.players.indexOf(player);
 
         if (playerIndex !== this.currentPlayerIndex) {
@@ -114,6 +121,8 @@ class UnoGame{
         const cardToPlay = player.hand[cardIndex];
         if (!cardToPlay) {
             throw new Error("Card not found in player's hand");
+        }else if (cardToPlay.color === "black" && !declaredColor) {
+            throw new Error("Must declare a color when playing a wild card");
         }
         // проверяем, что карта может быть сыграна на верхнюю карту на столе
         const topCardOnTable = this.discardPile[this.discardPile.length - 1]!;
@@ -123,13 +132,21 @@ class UnoGame{
         // играем карту
         player.hand.splice(cardIndex,1);
         this.discardPile.push(cardToPlay);
+        if (player.hand.length === 0){
+            this.winner = player;
+            return;
+        }
         // обрабатываем действие карты (например, смена направления, пропуск хода, взятие карт)
         if (cardToPlay.value === 'reverse'){
             this.direction *= -1;
         }
         if (cardToPlay.value === 'skip'){
             this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
-        }else if (cardToPlay.value === 'draw_two'){
+            // выдача двух карт следующему игроку и пропуск его хода
+        }else if (cardToPlay.value === 'wild'){
+            this.declaredColor = declaredColor || null;
+        }
+        else if (cardToPlay.value === 'draw_two'){
             const nextPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
             const nextPlayer = this.players[nextPlayerIndex];
             for (let i = 0; i <2; i++){
@@ -139,10 +156,11 @@ class UnoGame{
                 }
             }
             this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
-        }
-        if (cardToPlay.value === 'wild_draw_four'){
+        } // выдача четырех карт следующему игроку и пропуск его хода
+            else if (cardToPlay.value === 'wild_draw_four'){
             const nextPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
             const nextPlayer = this.players[nextPlayerIndex];
+            this.declaredColor = declaredColor || null; 
             for (let i =0; i <4; i++){
                 const card = this.deck.pop();
                 if (card) {
