@@ -2,9 +2,11 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import { RoomManager } from './game/RoomManager.js';
 
 
 const app = express();
+const roomManager = new RoomManager()
 
 // Enable CORS for all origins
 app.use(cors());
@@ -29,6 +31,12 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id}`);
     });
+    socket.on('create_room', () => {
+      const roomId = roomManager.createRoom();
+      socket.join(roomId);
+      socket.emit("room_created", roomId);
+      console.log(`Комната ${roomId} создана игроком ${socket.id}`);
+    })
 
 });
 
