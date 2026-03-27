@@ -14,10 +14,11 @@ export class RoomManager {
         }
         return result
     }
-    createRoom(roomId: string) : UnoGame {
+    createRoom(){
+        const newRoomId = this.generateRoomCode()
         const game = new UnoGame();
-        this.rooms.set(roomId, game);
-        return game;
+        this.rooms.set(newRoomId, game)
+        return newRoomId
     }
 
     getRoom(roomId: string): UnoGame | undefined {

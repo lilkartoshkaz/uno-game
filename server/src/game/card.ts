@@ -17,8 +17,8 @@ function createDeck(): Card[] {
 
     const colors: ColorCards[] = ['blue', 'red', 'green', 'yellow'];
     const numbers: ValueCards[] = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
-    const actions: ValueCards[] = ['skip', 'reverse', 'draw_two'];
-
+    const actions: ValueCards[] = ['skip', 'reverse', 'draw_two','wild', 'wild_draw_four'];
+    // добавляем карты с цифрами и действием для каждого цвета
     for (const color of colors){
         deck.push({ color: color,value: '0'});
 
@@ -62,6 +62,7 @@ class UnoGame{
     direction: number = 1;
     declaredColor: ColorCards | null = null;
     winner: Player | null = null;
+    hostId: string | null = null; 
 
     // методы для управления игрой, например, раздача карт, обработка ходов, проверка победителя
     constructor() {
@@ -75,7 +76,11 @@ class UnoGame{
     }
     addPlayer(id: string, name: string) {
         const newPlayer: Player = { id, name, hand: []};
-        this.players.push(newPlayer);
+        if (this.players.length == 0){
+            this.hostId = id;
+        };
+        this.players.push(newPlayer); 
+        
     }
     startGame() {
         // раздаем по 7 карт каждому игроку
@@ -169,12 +174,12 @@ class UnoGame{
             }
             this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
         }
-
+            
         this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
 
     }
     drawCard(playerId: string) {
-        // проверяем, что игрок может ходить
+        // проверяем, что игрок может ходить 
         const player = this.players.find(p => p.id === playerId);
         if (!player) {
             throw new Error("Player not found");
@@ -196,6 +201,9 @@ class UnoGame{
     }
 
 }
+export type { Card, Player };
+export { UnoGame, createDeck, shuffleDeck };
+export type { ColorCards, ValueCards };
 /* блок для тестирования создания и перемешивания колоды карт
 const deck = createDeck();
 console.log('Original Deck:', deck);

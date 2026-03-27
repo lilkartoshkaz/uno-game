@@ -31,13 +31,49 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id}`);
     });
+    // 
     socket.on('create_room', () => {
       const roomId = roomManager.createRoom();
       socket.join(roomId);
       socket.emit("room_created", roomId);
       console.log(`Комната ${roomId} создана игроком ${socket.id}`);
     })
+    socket.on('join_room', (roomId,playerName) => {
+      const game = roomManager.getRoom(roomId);
+      if(!game){
+        socket.emit('error_event', 'Нет такой комнаты');
+        return 
+      }
+      game.addPlayer(socket.id, playerName);
 
+      socket.join(roomId);
+      io.to(roomId).emit("player_joined", game.players);
+
+      console.log(`Игрок ${playerName} (${socket.id}) присоединился к комнате ${roomId}`);
+    })
+    socket.on('start_game', (roomId) => {
+      const game = roomManager.getRoom(roomId);
+      if (!game){
+        return;
+      }
+      if (socket.id != game.hostId ){
+        socket.emit('error_event', 'Только создатель может начать игру');
+        return;
+      }
+      if (game.players.length < 2){
+        socket.emit('error_event', 'Недостаточно игроков ');
+        return
+      }
+      game.startGame();
+      for( const player of game.players){
+        io.to(player.id).emit('your_cards', player.hand);
+      }
+      io.to(roomId).emit('game_started', {
+        topCard: game.discardPile[game.discardPile.length - 1]!, 
+        currentPlayerId: game.players[game.currentPlayerIndex]!.id 
+      });
+    })
+    
 });
 
 const PORT = 3001;
