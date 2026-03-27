@@ -76,9 +76,9 @@ class UnoGame{
     }
     addPlayer(id: string, name: string) {
         const newPlayer: Player = { id, name, hand: []};
-        if (this.players.length == 0){
+        if (this.players.length === 0){
             this.hostId = id;
-        };
+        }
         this.players.push(newPlayer); 
         
     }

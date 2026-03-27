@@ -73,6 +73,51 @@ io.on('connection', (socket) => {
         currentPlayerId: game.players[game.currentPlayerIndex]!.id 
       });
     })
+    socket.on('play_card', (roomId, cardIndex, declaredColor) => {
+      const game = roomManager.getRoom(roomId);
+      if (!game){
+        return;
+      }
+      try{
+        game.playCard(socket.id, cardIndex, declaredColor)
+
+        io.to(roomId).emit('game_started', {
+          topCard: game.discardPile[game.discardPile.length -1]!,
+          currentPlayerId: game.players[game.currentPlayerIndex]!.id
+        });
+        for(const player of game.players){
+          io.to(player.id).emit('your_cards', player.hand);
+        }
+        if(game.winner){
+          io.to(roomId).emit('game_over', game.winner.name);
+        }
+      }catch(err: any){
+        socket.emit('error_event', err.message);
+      }
+    })
+    socket.on('draw_card', (roomId) => {
+      const game = roomManager.getRoom(roomId);
+
+      if (!game) return;
+
+      try {
+        game.drawCard(socket.id);
+
+        io.to(roomId).emit('game_started', {
+          topCard: game.discardPile[game.discardPile.length -1]!,
+          currentPlayerId: game.players[game.currentPlayerIndex]!.id
+        });
+        const player = game.players.find(p => p.id === socket.id);
+
+        if (player){
+          socket.emit('your_cards', player.hand);
+        }
+
+
+      } catch(err: any){
+        socket.emit('error_event', err.message)
+      }
+    })
     
 });
 
