@@ -53,6 +53,7 @@ interface Player{
     id: string;
     name: string;
     hand: Card[];
+    declareUno?: boolean;
 }
 class UnoGame{
     players: Player[];
@@ -137,6 +138,7 @@ class UnoGame{
         // играем карту
         player.hand.splice(cardIndex,1);
         this.discardPile.push(cardToPlay);
+        player.declareUno = false;
         if (player.hand.length === 0){
             this.winner = player;
             return;
@@ -193,6 +195,7 @@ class UnoGame{
             this.reshuffleDeck();
         }
         const card = this.deck.pop();
+        
         if (card) {
             player.hand.push(card);
         }
@@ -211,6 +214,27 @@ class UnoGame{
         this.deck = cardToSuffle;
         console.log("Колода перемешана! Теперь в ней карт:", this.deck.length);
 
+    }
+    callUno(playerId:string){
+        const player = this.players.find(p => p.id === playerId);
+        if(!player){throw new Error("Player not found");}
+
+        if(player.hand.length > 2){throw new Error("Рано кричать УНО! У тебя больше 2 карт.");}
+        
+        player.declareUno = true;
+    }
+    catchUno(callerId: string){
+        const violator = this.players.find(p => p.hand.length === 1 && !p.declareUno);
+
+        if (!violator){throw new Error("Некого ловить! Все честные или карт больше одной.");}
+
+        for (let i = 0; i < 2; i ++){
+            if(this.deck.length === 0) this.reshuffleDeck();
+            const card = this.deck.pop();
+            if(card) violator.hand.push(card);
+        }
+        violator.declareUno = false;
+        return violator;
     }
 
 }

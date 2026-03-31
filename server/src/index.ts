@@ -3,6 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { RoomManager } from './game/RoomManager.js';
+import { error } from 'console';
 
 
 const app = express();
@@ -148,6 +149,38 @@ io.on('connection', (socket) => {
 
 
       } catch(err: any){
+        socket.emit('error_event', err.message)
+      }
+    })
+    socket.on('call_uno', (roomId)=>{
+      const game = roomManager.getRoom(roomId);
+      if (!game){return;}
+      try{
+        game?.callUno(socket.id)
+        const caller = game.players.find(p => p.id === socket.id);
+            if (caller) {
+              io.to(roomId).emit('system_message', `🛡️ ${caller.name} крикнул "УНО!"`);
+            }         
+      }catch(err:any){
+        socket.emit('error_event', err.message)
+      }
+    })
+    socket.on('catch_uno', (roomId) => {
+      const game = roomManager.getRoom(roomId);
+      if (!game){return;}
+
+      try{
+        const violator = game.catchUno(socket.id);
+
+        // 1. Отправляем нарушителю его обновленные карты со штрафом
+        io.to(violator.id).emit('your_cards', violator.hand);
+
+        // 2. Рассылаем всем в комнате уведомление о поимке
+        const catcher = game.players.find(p => p.id === socket.id);
+        if (catcher && violator) {
+          io.to(roomId).emit('system_message', `🚨 ${catcher.name} поймал игрока ${violator.name}! Штраф 2 карты.`);
+        }   
+      }catch(err: any){
         socket.emit('error_event', err.message)
       }
     })
