@@ -189,14 +189,27 @@ class UnoGame{
         if (playerIndex !== this.currentPlayerIndex) {
             throw new Error("Not this player's turn");
         }
-        // игрок берет карту из колоды
-        if (this.deck.length ===0){throw new Error("Deck is empty")};
+        if (this.deck.length === 0){
+            this.reshuffleDeck();
+        }
         const card = this.deck.pop();
         if (card) {
             player.hand.push(card);
         }
+       
         this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
         
+
+    }
+    reshuffleDeck() {
+        if (this.discardPile.length <= 1){
+            return;
+        }
+        const cardToSuffle = this.discardPile.splice(0, this.discardPile.length - 1); // все карты, кроме верхней, идут в колоду для перемешивания
+        cardToSuffle.sort(() => Math.random() - 0.5);
+        // добавляем перемешанные карты обратно в колоду
+        this.deck = cardToSuffle;
+        console.log("Колода перемешана! Теперь в ней карт:", this.deck.length);
 
     }
 

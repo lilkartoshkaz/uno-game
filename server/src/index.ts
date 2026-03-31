@@ -29,7 +29,40 @@ io.on('connection', (socket) => {
     
     // Handle disconnection
     socket.on('disconnect', () => {
-        console.log(`User disconnected: ${socket.id}`);
+        for (const[roomId, game] of roomManager.rooms.entries()){
+          const playerIndex = game.players.findIndex(p => p.id === socket.id);
+          if (playerIndex !== -1){
+            console.log(`Удаляем игрока ${socket.id} из комнаты ${roomId}`);
+          }
+          if (playerIndex < game.currentPlayerIndex){
+            game.currentPlayerIndex--;
+          } else if (playerIndex === game.currentPlayerIndex && playerIndex === game.players.length - 1){
+            game.currentPlayerIndex = 0;
+          }
+          game.players = game.players.filter(p => p.id !== socket.id);
+          if (game.players.length === 0){
+            roomManager.rooms.delete(roomId);
+            console.log(`Комната ${roomId} удалена (пустая)`);
+            return;
+          }
+          if (game.hostId === socket.id){
+            game.hostId = game.players[0]?.id || null;
+          }
+          if (game.discardPile.length > 0 && game.players.length < 2) {
+            game.winner = game.players[0] || null ; 
+            io.to(roomId).emit('game_over', game.winner!.name);
+          } 
+          else {
+           io.to(roomId).emit('player_joined', game.players);
+           if (game.discardPile.length > 0) {
+              io.to(roomId).emit('game_started', {
+                topCard: game.discardPile[game.discardPile.length - 1]!,
+                  currentPlayerId: game.players[game.currentPlayerIndex]!.id
+              });
+            }
+          }     
+           break;
+        } 
     });
     // 
     socket.on('create_room', () => {
