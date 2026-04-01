@@ -1,9 +1,13 @@
 import express from 'express';
 import http from 'http';
-import { Server } from 'socket.io';
+import { Server, Socket } from 'socket.io';
 import cors from 'cors';
 import { RoomManager } from './game/RoomManager.js';
 import { error } from 'console';
+
+interface CustomSocket extends Socket {
+  lastMessageTime?: number;
+}
 
 
 const app = express();
@@ -23,10 +27,19 @@ const io = new Server(server, {
     methods: ['GET', 'POST']
   }
 });
+// Функция для рассылки списка доступных комнат всем подключенным клиентам
+const broadcastRooms = () => {
+  const roomsList = Array.from(roomManager.rooms.entries()).map(([id, game]) => ({
+    id,
+    playersCount: game.players.length
+  }));
+  io.emit('available_rooms', roomsList);
+};
 
 //  Handle Socket.IO connections
-io.on('connection', (socket) => {
-    console.log(`A user connected: ${socket.id}`);
+io.on('connection', (socket: CustomSocket) => {
+  broadcastRooms();  
+  console.log(`A user connected: ${socket.id}`);
     
     // Handle disconnection
     socket.on('disconnect', () => {
@@ -58,12 +71,13 @@ io.on('connection', (socket) => {
            if (game.discardPile.length > 0) {
               io.to(roomId).emit('game_started', {
                 topCard: game.discardPile[game.discardPile.length - 1]!,
-                  currentPlayerId: game.players[game.currentPlayerIndex]!.id
+                  currentPlayerId: game.players[game.currentPlayerIndex]?.id
               });
             }
           }     
            break;
-        } 
+        }
+        broadcastRooms();
     });
     // 
     socket.on('create_room', () => {
@@ -71,6 +85,7 @@ io.on('connection', (socket) => {
       socket.join(roomId);
       socket.emit("room_created", roomId);
       console.log(`Комната ${roomId} создана игроком ${socket.id}`);
+      broadcastRooms();
     })
     socket.on('join_room', (roomId,playerName) => {
       const game = roomManager.getRoom(roomId);
@@ -84,6 +99,7 @@ io.on('connection', (socket) => {
       io.to(roomId).emit("player_joined", game.players);
 
       console.log(`Игрок ${playerName} (${socket.id}) присоединился к комнате ${roomId}`);
+      broadcastRooms()
     })
     socket.on('start_game', (roomId) => {
       const game = roomManager.getRoom(roomId);
@@ -104,7 +120,7 @@ io.on('connection', (socket) => {
       }
       io.to(roomId).emit('game_started', {
         topCard: game.discardPile[game.discardPile.length - 1]!, 
-        currentPlayerId: game.players[game.currentPlayerIndex]!.id 
+        currentPlayerId: game.players[game.currentPlayerIndex]?.id 
       });
     })
     socket.on('play_card', (roomId, cardIndex, declaredColor) => {
@@ -183,8 +199,30 @@ io.on('connection', (socket) => {
       }catch(err: any){
         socket.emit('error_event', err.message)
       }
-    })
+    });
+
     
+    const SPAM_COOLDOWN_MS = 1000; // Лимит: 1 секунда
+
+    socket.on('send_message', (payload) => {
+      const now = Date.now();
+      
+      // Проверка на спам
+      if (socket.lastMessageTime && (now - socket.lastMessageTime < SPAM_COOLDOWN_MS)) {
+        socket.emit('spam_error', { 
+          messageId: payload.messageId, 
+          text: 'Не спамь! Подожди секунду.' 
+        });
+        return; 
+      }
+
+      // Обновляем таймер последнего сообщения
+      socket.lastMessageTime = now;
+      
+      // Пересылаем сообщение всем остальным в комнате
+      socket.to(payload.roomId).emit('new_message', payload);
+    });
+
 });
 
 const PORT = 3001;

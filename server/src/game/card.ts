@@ -17,7 +17,7 @@ function createDeck(): Card[] {
 
     const colors: ColorCards[] = ['blue', 'red', 'green', 'yellow'];
     const numbers: ValueCards[] = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
-    const actions: ValueCards[] = ['skip', 'reverse', 'draw_two','wild', 'wild_draw_four'];
+    const actions: ValueCards[] = ['skip', 'reverse', 'draw_two'];
     // добавляем карты с цифрами и действием для каждого цвета
     for (const color of colors){
         deck.push({ color: color,value: '0'});
@@ -138,7 +138,6 @@ class UnoGame{
         // играем карту
         player.hand.splice(cardIndex,1);
         this.discardPile.push(cardToPlay);
-        player.declareUno = false;
         if (player.hand.length === 0){
             this.winner = player;
             return;
@@ -199,6 +198,7 @@ class UnoGame{
         if (card) {
             player.hand.push(card);
         }
+         player.declareUno = false;
        
         this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
         
