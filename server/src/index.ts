@@ -43,42 +43,70 @@ io.on('connection', (socket: CustomSocket) => {
     
     // Handle disconnection
     socket.on('disconnect', () => {
-        for (const[roomId, game] of roomManager.rooms.entries()){
-          const playerIndex = game.players.findIndex(p => p.id === socket.id);
-          if (playerIndex !== -1){
-            console.log(`Удаляем игрока ${socket.id} из комнаты ${roomId}`);
-          }
-          if (playerIndex < game.currentPlayerIndex){
-            game.currentPlayerIndex--;
-          } else if (playerIndex === game.currentPlayerIndex && playerIndex === game.players.length - 1){
-            game.currentPlayerIndex = 0;
-          }
-          game.players = game.players.filter(p => p.id !== socket.id);
-          if (game.players.length === 0){
-            roomManager.rooms.delete(roomId);
-            console.log(`Комната ${roomId} удалена (пустая)`);
-            return;
-          }
-          if (game.hostId === socket.id){
-            game.hostId = game.players[0]?.id || null;
-          }
-          if (game.discardPile.length > 0 && game.players.length < 2) {
-            game.winner = game.players[0] || null ; 
-            io.to(roomId).emit('game_over', game.winner!.name);
-          } 
-          else {
-           io.to(roomId).emit('player_joined', game.players);
-           if (game.discardPile.length > 0) {
-              io.to(roomId).emit('game_started', {
-                topCard: game.discardPile[game.discardPile.length - 1]!,
-                  currentPlayerId: game.players[game.currentPlayerIndex]?.id
-              });
-            }
-          }     
-           break;
-        }
-        broadcastRooms();
-    });
+      for (const [roomId, game] of roomManager.rooms.entries()){
+        const player = game.players.find(p => p.id === socket.id);
+            if (!player) continue;
+            console.log(`Игрок ${player.name} отключился от комнаты ${roomId}. Ждем возвращения...`);
+
+            player.isOffline = true;
+
+            player.disconnectTimeout = setTimeout(() => {
+              console.log(`Игрок ${player.name} не вернулся. Удаляем окончательно.`);
+              const playerIndex = game.players.findIndex(p => p.persistentId === player.persistentId);
+              
+              if (playerIndex !== -1) {
+                // Старая логика сдвига индекса хода...
+                if (playerIndex < game.currentPlayerIndex) {
+                    game.currentPlayerIndex--;
+                } else if (playerIndex === game.currentPlayerIndex && playerIndex === game.players.length - 1) {
+                    game.currentPlayerIndex = 0;
+                }
+                
+                game.players = game.players.filter(p => p.persistentId !== player.persistentId);
+                
+                // --- НОВАЯ ЛОГИКА УДАЛЕНИЯ ---
+                
+                // Вариант А: В комнате никого не осталось
+                if (game.players.length === 0) {
+                    game.stopTimer();
+                    roomManager.rooms.delete(roomId);
+                    broadcastRooms();
+                    return;
+                }
+                
+                // Вариант Б: Игра шла (есть карты на столе), и остался всего 1 игрок
+                if (game.discardPile.length > 0 && game.players.length < 2) {
+                    const survivor = game.players[0];
+                    if (survivor) {
+                        io.to(roomId).emit('game_over', `${survivor.name} (остальные сбежали)`);
+                    }
+                    
+                    setTimeout(() => {
+                        game.stopTimer();
+                        roomManager.rooms.delete(roomId);
+                        broadcastRooms();
+                    }, 5000);
+                    return;
+                }
+
+                // Если игра ещё в лобби или игроков всё ещё много
+                if (game.hostId === player.id) {
+                    game.hostId = game.players[0]?.id || null;
+                }
+                
+                io.to(roomId).emit('player_joined', getSafePlayers(game.players));
+                broadcastRooms();
+              }
+            }, 60000);
+      }
+    })
+    const getSafePlayers = (players: any[]) => {
+      return players.map(p => {
+        // Достаем disconnectTimeout, а всё остальное кладем в safePlayer
+        const { disconnectTimeout, ...safePlayer } = p;
+        return safePlayer; // Отправляем чистый объект
+      });
+    };
     // 
     socket.on('create_room', () => {
       const roomId = roomManager.createRoom();
@@ -87,25 +115,47 @@ io.on('connection', (socket: CustomSocket) => {
       console.log(`Комната ${roomId} создана игроком ${socket.id}`);
       broadcastRooms();
     })
-    socket.on('join_room', (roomId,playerName) => {
+    socket.on('join_room', (roomId, playerName, persistentId) => {
       const game = roomManager.getRoom(roomId);
       if(!game){
         socket.emit('error_event', 'Нет такой комнаты');
         return 
       }
-      game.addPlayer(socket.id, playerName);
+      
+      const player = game.addPlayer(socket.id, playerName, persistentId); 
 
       socket.join(roomId);
-      io.to(roomId).emit("player_joined", game.players);
+      io.to(roomId).emit('player_joined', getSafePlayers(game.players));
 
       console.log(`Игрок ${playerName} (${socket.id}) присоединился к комнате ${roomId}`);
-      broadcastRooms()
-    })
+      broadcastRooms(); 
+      if (game.discardPile.length > 0) {
+
+        socket.emit('your_cards', player.hand);
+    
+        socket.emit('game_started', {
+          topCard: game.discardPile[game.discardPile.length - 1]!,
+          currentPlayerId: game.players[game.currentPlayerIndex]?.id,
+          turnEndTime: game.turnEndTime
+        });
+      }
+    });
     socket.on('start_game', (roomId) => {
       const game = roomManager.getRoom(roomId);
       if (!game){
         return;
       }
+      game.onTurnChange = () => {
+        io.to(roomId).emit('game_started', {
+            topCard: game.discardPile[game.discardPile.length - 1]!,
+            currentPlayerId: game.players[game.currentPlayerIndex]?.id,
+            turnEndTime: game.turnEndTime // Передаем время
+        });
+        for (const player of game.players) {
+            io.to(player.id).emit('your_cards', player.hand);
+        }
+        io.to(roomId).emit('system_message', '⏰ Время вышло! Игрок пропустил ход.');
+      };
       if (socket.id != game.hostId ){
         socket.emit('error_event', 'Только создатель может начать игру');
         return;
@@ -120,31 +170,44 @@ io.on('connection', (socket: CustomSocket) => {
       }
       io.to(roomId).emit('game_started', {
         topCard: game.discardPile[game.discardPile.length - 1]!, 
-        currentPlayerId: game.players[game.currentPlayerIndex]?.id 
+        currentPlayerId: game.players[game.currentPlayerIndex]?.id,
+        turnEndTime: game.turnEndTime
       });
     })
     socket.on('play_card', (roomId, cardIndex, declaredColor) => {
       const game = roomManager.getRoom(roomId);
-      if (!game){
-        return;
-      }
-      try{
-        game.playCard(socket.id, cardIndex, declaredColor)
+      if (!game) return;
+      
+      try {
+        game.playCard(socket.id, cardIndex, declaredColor);
 
+        // Рассылаем состояние...
         io.to(roomId).emit('game_started', {
-          topCard: game.discardPile[game.discardPile.length -1]!,
-          currentPlayerId: game.players[game.currentPlayerIndex]!.id
+          topCard: game.discardPile[game.discardPile.length - 1]!,
+          currentPlayerId: game.players[game.currentPlayerIndex]!.id,
+          turnEndTime: game.turnEndTime
         });
-        for(const player of game.players){
+
+        for (const player of game.players) {
           io.to(player.id).emit('your_cards', player.hand);
         }
-        if(game.winner){
+
+        if (game.winner) {
           io.to(roomId).emit('game_over', game.winner.name);
+          
+          // Сразу убираем из списка доступных, чтобы никто не пытался зайти
+          broadcastRooms(); 
+
+          // Удаляем саму комнату через 3 секунды, чтобы сокеты успели закрыться штатно
+          setTimeout(() => {
+            game.stopTimer();
+            roomManager.deleteRoom(roomId);
+          }, 3000); 
         }
-      }catch(err: any){
+      } catch (err: any) {
         socket.emit('error_event', err.message);
       }
-    })
+    });
     socket.on('draw_card', (roomId) => {
       const game = roomManager.getRoom(roomId);
 
@@ -155,7 +218,8 @@ io.on('connection', (socket: CustomSocket) => {
 
         io.to(roomId).emit('game_started', {
           topCard: game.discardPile[game.discardPile.length -1]!,
-          currentPlayerId: game.players[game.currentPlayerIndex]!.id
+          currentPlayerId: game.players[game.currentPlayerIndex]!.id,
+          turnEndTime: game.turnEndTime
         });
         const player = game.players.find(p => p.id === socket.id);
 
@@ -221,6 +285,38 @@ io.on('connection', (socket: CustomSocket) => {
       
       // Пересылаем сообщение всем остальным в комнате
       socket.to(payload.roomId).emit('new_message', payload);
+    });
+    socket.on('surrender', (roomId) => {
+      const game = roomManager.getRoom(roomId);
+      if (!game) return;
+
+      const player = game.players.find(p => p.id === socket.id);
+      if (!player) return;
+
+      console.log(`Игрок ${player.name} сдался. Завершаем игру в комнате ${roomId}`);
+
+      // 1. Удаляем игрока из списка мгновенно (без таймаута)
+      game.players = game.players.filter(p => p.id !== socket.id);
+
+      // 2. Если остался один игрок или меньше — объявляем конец
+      if (game.players.length <= 1) {
+        const winnerName = game.players[0]?.name || "Никто (все сдались)";
+        
+        // Оповещаем оставшихся
+        io.to(roomId).emit('game_over', `${winnerName} победил (оппонент сдался)`);
+        
+        // Мгновенно чистим комнату
+        game.stopTimer();
+        roomManager.deleteRoom(roomId);
+        broadcastRooms();
+      } else {
+        // Если игроков было много, просто передаем ход и уведомляем остальных
+        if (game.hostId === socket.id) {
+            game.hostId = game.players[0]?.id || null;
+        }
+        io.to(roomId).emit('player_joined', getSafePlayers(game.players));
+        io.to(roomId).emit('system_message', `🏳️ Игрок ${player.name} сдался.`);
+      }
     });
 
 });

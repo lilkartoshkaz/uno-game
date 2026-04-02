@@ -1,7 +1,7 @@
 import { type Card, type Player, UnoGame, createDeck, shuffleDeck, type ColorCards, type ValueCards } from './card.js';
 
 export class RoomManager {
-    private rooms: Map<string, UnoGame>;
+    public rooms: Map<string, UnoGame>;
     
     constructor() {
         this.rooms = new Map();

@@ -4,6 +4,19 @@ import './App.css';
 
 const socket = io("http://localhost:3001");
 
+// --- ЛОГИКА ВЕЧНОГО ID ---
+// Генерируем уникальный ID для браузера и сохраняем навсегда
+const getPersistentId = () => {
+  let id = localStorage.getItem('uno_persistent_id');
+  if (!id) {
+    id = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    localStorage.setItem('uno_persistent_id', id);
+  }
+  return id;
+};
+
+const PERSISTENT_ID = getPersistentId();
+
 interface Card {
   color: string;
   value: string;
@@ -13,6 +26,8 @@ interface Player {
   id: string;
   name: string;
   hand?: Card[];
+  isOffline?: boolean;
+  persistentId?: string;
 }
 
 interface RoomInfo {
@@ -166,8 +181,11 @@ function App() {
   const [isConnected, setIsConnected] = useState<boolean>(socket.connected);
   
   const [roomId, setRoomId] = useState<string>('');
-  const [playerName, setPlayerName] = useState<string>('');
-  const playerNameRef = useRef('');
+  
+  // Достаем имя из localStorage, чтобы не вводить после F5
+  const [playerName, setPlayerName] = useState<string>(localStorage.getItem('uno_playerName') || '');
+  const playerNameRef = useRef(playerName);
+  
   const [players, setPlayers] = useState<Player[]>([]); 
   const [hostId, setHostId] = useState<string | null>(null);
   const [availableRooms, setAvailableRooms] = useState<RoomInfo[]>([]);
@@ -179,32 +197,74 @@ function App() {
   const [winner, setWinner] = useState<string | null>(null);
   const [systemMessage, setSystemMessage] = useState<string | null>(null);
 
+  const [turnEndTime, setTurnEndTime] = useState<number | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
+
   useEffect(() => {
     playerNameRef.current = playerName;
   }, [playerName]);
 
+  // Визуальный отсчет таймера
   useEffect(() => {
-    socket.on("connect", () => setIsConnected(true));
+    if (!turnEndTime) return;
+
+    const calculateTime = () => Math.max(0, Math.floor((turnEndTime - Date.now()) / 1000));
+
+    const interval = setInterval(() => {
+      setTimeLeft(calculateTime());
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [turnEndTime]);
+
+  useEffect(() => {
+    socket.on("connect", () => {
+      setIsConnected(true);
+      
+      // АВТОРЕКОННЕКТ: Проверяем, был ли игрок в комнате до разрыва связи
+      const savedRoomId = sessionStorage.getItem('uno_roomId');
+      if (savedRoomId && playerNameRef.current) {
+        setRoomId(savedRoomId);
+        // Передаем PERSISTENT_ID на сервер
+        socket.emit('join_room', savedRoomId, playerNameRef.current, PERSISTENT_ID);
+      }
+    });
+    
     socket.on("disconnect", () => setIsConnected(false));
     socket.on("available_rooms", (rooms: RoomInfo[]) => setAvailableRooms(rooms));
     
     socket.on("room_created", (code: string) => {
       setRoomId(code);
       setHostId(socket.id || null); 
-      socket.emit('join_room', code, playerNameRef.current);
+      sessionStorage.setItem('uno_roomId', code); // Запоминаем комнату
+      socket.emit('join_room', code, playerNameRef.current, PERSISTENT_ID);
     });
 
     socket.on("player_joined", (serverPlayers: Player[]) => setPlayers(serverPlayers));
-    socket.on("error_event", (message: string) => alert("Ошибка: " + message));
+    
+    socket.on("error_event", (message: string) => {
+      alert("Ошибка: " + message);
+      // Если комната удалена или не существует, сбрасываем кэш
+      if (message.includes("Нет такой комнаты")) {
+        sessionStorage.removeItem('uno_roomId');
+        setRoomId('');
+      }
+    });
+    
     socket.on("your_cards", (cards: Card[]) => setMyCards(cards));
 
-    socket.on("game_started", (data: { topCard: Card, currentPlayerId: string }) => {
+    socket.on("game_started", (data: { topCard: Card, currentPlayerId: string, turnEndTime?: number }) => {
       setTopCard(data.topCard);
       setCurrentPlayerTurn(data.currentPlayerId);
+      if (data.turnEndTime) setTurnEndTime(data.turnEndTime);
       setIsGameStarted(true); 
     });
 
-    socket.on("game_over", (winnerName: string) => setWinner(winnerName));
+    socket.on("game_over", (winnerName: string) => {
+      setWinner(winnerName);
+      sessionStorage.removeItem('uno_roomId'); // Игра окончена, чистим сессию
+    });
+    
     socket.on("system_message", (msg: string) => {
       setSystemMessage(msg);
       setTimeout(() => setSystemMessage(null), 3000);
@@ -220,13 +280,16 @@ function App() {
 
   const handleCreateRoom = () => {
     if (!playerName.trim()) return alert("Сначала введи свое имя!");
+    localStorage.setItem('uno_playerName', playerName); // Сохраняем имя
     socket.emit('create_room');
   };
 
   const handleJoinRoom = (code: string) => {
     if (!playerName.trim()) return alert("Сначала введи свое имя!");
+    localStorage.setItem('uno_playerName', playerName); // Сохраняем имя
+    sessionStorage.setItem('uno_roomId', code); // Запоминаем комнату
     setRoomId(code);
-    socket.emit('join_room', code, playerName);
+    socket.emit('join_room', code, playerName, PERSISTENT_ID); // Отправляем ID
   };
 
   const handleJoinManual = () => {
@@ -260,25 +323,33 @@ function App() {
   const handleCallUno = () => socket.emit('call_uno', roomId);
   const handleCatchUno = () => socket.emit('catch_uno', roomId);
 
-  const handleGoHome = () => {
-    if (window.confirm("Выйти из игры?")) window.location.reload(); 
+const handleGoHome = () => {
+    if (window.confirm("Вы точно хотите сдаться? Игра закончится для всех.")) {
+      // 1. Отправляем специальное событие сдачи
+      socket.emit('surrender', roomId);
+      
+      // 2. Очищаем комнату из памяти браузера, чтобы реконнект не сработал
+      sessionStorage.removeItem('uno_roomId');
+      
+      // 3. Перезагружаем
+      window.location.reload(); 
+    }
   };
 
-  const isJoinedRoom = players.some((p) => p.id === socket.id);
+  const isJoinedRoom = players.some((p) => p.id === socket.id || p.persistentId === PERSISTENT_ID);
 
-  // Динамический фон: если игра началась, делаем красивый зеленый "стол казино"
   const backgroundStyle = isGameStarted 
     ? 'radial-gradient(circle at center, #2e7d32 0%, #1b5e20 100%)' 
     : '#f4f6f9';
 
   return (
     <div style={{ 
+      position: 'absolute', top: 0, left: 0, right: 0, 
       margin: 0, padding: 0, boxSizing: 'border-box', fontFamily: 'sans-serif', 
-      minHeight: '100vh', background: backgroundStyle, color: isGameStarted ? '#fff' : '#333',
-      transition: 'background 0.5s ease', overflowX: 'hidden'
+      minHeight: '100vh', width: '100vw', background: backgroundStyle, color: isGameStarted ? '#fff' : '#333',
+      transition: 'background 0.5s ease', overflowX: 'hidden', overflowY: 'auto'
     }}>
       
-      {/* ВСПЛЫВАЮЩЕЕ УВЕДОМЛЕНИЕ */}
       {systemMessage && (
         <div style={{
           position: 'fixed', top: '30px', left: '50%', transform: 'translateX(-50%)',
@@ -290,7 +361,6 @@ function App() {
         </div>
       )}
 
-      {/* ШАПКА СТАТУСА (видна только в меню/лобби) */}
       {!isGameStarted && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 40px', background: 'white', boxShadow: '0 2px 10px rgba(0,0,0,0.05)' }}>
           <h1 style={{ margin: 0, color: '#dc3545', fontSize: '28px', fontWeight: '900', letterSpacing: '1px' }}>UNO ONLINE</h1>
@@ -304,57 +374,37 @@ function App() {
         
         {!isJoinedRoom ? (
           // ==========================================
-          // ЭКРАН 1: ГЛАВНОЕ МЕНЮ (ПК-ВЕРСИЯ - 2 КОЛОНКИ)
+          // ЭКРАН 1: ГЛАВНОЕ МЕНЮ
           // ==========================================
           <div style={{ display: 'flex', gap: '40px', maxWidth: '1200px', margin: '0 auto', alignItems: 'flex-start' }}>
-            
-            {/* ЛЕВАЯ КОЛОНКА: ВХОД И СОЗДАНИЕ */}
             <div style={{ flex: '1', background: 'white', padding: '40px', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.08)' }}>
               <h2 style={{ marginTop: 0, fontSize: '28px', color: '#212529', marginBottom: '30px' }}>Подключение к игре</h2>
-              
               <div style={{ marginBottom: '30px' }}>
                 <label style={{ display: 'block', marginBottom: '10px', fontWeight: 'bold', color: '#495057', fontSize: '16px' }}>Ваш никнейм:</label>
                 <input 
-                  placeholder="Введите имя..." 
-                  value={playerName} 
-                  onChange={(e) => setPlayerName(e.target.value)} 
-                  style={{ width: '100%', padding: '15px', fontSize: '18px', borderRadius: '8px', border: '2px solid #e9ecef', boxSizing: 'border-box', outline: 'none', transition: 'border-color 0.2s' }}
-                  onFocus={(e) => e.target.style.borderColor = '#007BFF'}
-                  onBlur={(e) => e.target.style.borderColor = '#e9ecef'}
+                  placeholder="Введите имя..." value={playerName} onChange={(e) => setPlayerName(e.target.value)} 
+                  style={{ width: '100%', padding: '15px', fontSize: '18px', borderRadius: '8px', border: '2px solid #e9ecef', boxSizing: 'border-box', outline: 'none' }}
                 />
               </div>
-
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                <button onClick={handleCreateRoom} style={{ padding: '18px', fontSize: '18px', fontWeight: 'bold', background: '#007BFF', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s', boxShadow: '0 4px 10px rgba(0,123,255,0.3)' }}>
-                  ➕ Создать новую комнату
-                </button>
-                <button onClick={handleJoinManual} style={{ padding: '18px', fontSize: '18px', fontWeight: 'bold', background: '#6c757d', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s' }}>
-                  🔑 Войти по коду вручную
-                </button>
+                <button onClick={handleCreateRoom} style={{ padding: '18px', fontSize: '18px', fontWeight: 'bold', background: '#007BFF', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,123,255,0.3)' }}>➕ Создать новую комнату</button>
+                <button onClick={handleJoinManual} style={{ padding: '18px', fontSize: '18px', fontWeight: 'bold', background: '#6c757d', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>🔑 Войти по коду вручную</button>
               </div>
             </div>
 
-            {/* ПРАВАЯ КОЛОНКА: СПИСОК КОМНАТ */}
             <div style={{ flex: '1', background: 'white', padding: '40px', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.08)', minHeight: '400px' }}>
               <h2 style={{ marginTop: 0, fontSize: '28px', color: '#212529', marginBottom: '30px' }}>Открытые комнаты</h2>
-              
               {availableRooms.length === 0 ? (
-                <div style={{ padding: '40px 20px', textAlign: 'center', background: '#f8f9fa', borderRadius: '8px', color: '#adb5bd', fontSize: '18px', border: '2px dashed #dee2e6' }}>
-                  Сейчас нет активных игр.<br/>Будьте первым, кто создаст комнату!
-                </div>
+                <div style={{ padding: '40px 20px', textAlign: 'center', background: '#f8f9fa', borderRadius: '8px', color: '#adb5bd', fontSize: '18px', border: '2px dashed #dee2e6' }}>Сейчас нет активных игр.</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', maxHeight: '500px', overflowY: 'auto', paddingRight: '10px' }}>
                   {availableRooms.map((room) => (
-                    <div key={room.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: '10px', transition: 'transform 0.2s, box-shadow 0.2s' }}
-                         onMouseOver={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 5px 15px rgba(0,0,0,0.05)'; }}
-                         onMouseOut={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}>
+                    <div key={room.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: '10px' }}>
                       <div>
                         <div style={{ fontSize: '20px', color: '#212529', fontWeight: 'bold', marginBottom: '5px' }}>Комната: {room.id}</div>
                         <div style={{ fontSize: '15px', color: '#6c757d' }}>Игроков внутри: <b>{room.playersCount}</b></div>
                       </div>
-                      <button onClick={() => handleJoinRoom(room.id)} style={{ background: '#28a745', color: 'white', border: 'none', padding: '12px 25px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px', boxShadow: '0 4px 10px rgba(40,167,69,0.3)' }}>
-                        Войти
-                      </button>
+                      <button onClick={() => handleJoinRoom(room.id)} style={{ background: '#28a745', color: 'white', border: 'none', padding: '12px 25px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}>Войти</button>
                     </div>
                   ))}
                 </div>
@@ -364,7 +414,7 @@ function App() {
 
         ) : !isGameStarted ? (
           // ==========================================
-          // ЭКРАН 2: ЛОББИ (ПК-ВЕРСИЯ)
+          // ЭКРАН 2: ЛОББИ КОМНАТЫ
           // ==========================================
           <div style={{ maxWidth: '900px', margin: '0 auto', background: 'white', padding: '50px', borderRadius: '16px', boxShadow: '0 10px 40px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f8f9fa', paddingBottom: '20px', marginBottom: '30px' }}>
@@ -379,9 +429,9 @@ function App() {
                 <h3 style={{ color: '#6c757d', marginBottom: '15px', fontSize: '20px' }}>Список участников ({players.length}):</h3>
                 <div style={{ background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: '12px', padding: '10px' }}>
                   {players.map((p) => (
-                    <div key={p.id} style={{ padding: '15px 20px', fontSize: '20px', borderBottom: '1px solid #e9ecef', display: 'flex', alignItems: 'center', color: '#212529' }}>
-                      <span style={{ fontSize: '24px', marginRight: '15px' }}>👤</span>
-                      <span style={{ fontWeight: p.id === socket.id ? 'bold' : 'normal', flex: 1 }}>{p.name} {p.id === socket.id ? '(Вы)' : ''}</span>
+                    <div key={p.id} style={{ padding: '15px 20px', fontSize: '20px', borderBottom: '1px solid #e9ecef', display: 'flex', alignItems: 'center', color: '#212529', opacity: p.isOffline ? 0.5 : 1 }}>
+                      <span style={{ fontSize: '24px', marginRight: '15px' }}>{p.isOffline ? '👻' : '👤'}</span>
+                      <span style={{ fontWeight: p.id === socket.id ? 'bold' : 'normal', flex: 1 }}>{p.name} {p.id === socket.id ? '(Вы)' : ''} {p.isOffline ? ' [Отключился]' : ''}</span>
                       {p.id === hostId && <span style={{ background: '#ffc107', color: '#000', fontSize: '12px', padding: '4px 10px', borderRadius: '12px', fontWeight: 'bold' }}>ХОСТ</span>}
                     </div>
                   ))}
@@ -390,17 +440,11 @@ function App() {
 
               <div style={{ flex: '1', display: 'flex', flexDirection: 'column', gap: '20px', justifyContent: 'center' }}>
                 {socket.id === hostId ? (
-                  <button onClick={handleStartGame} disabled={players.length < 2} style={{ padding: '20px', fontSize: '20px', background: players.length < 2 ? '#6c757d' : '#28a745', color: 'white', fontWeight: 'bold', border: 'none', borderRadius: '12px', cursor: players.length < 2 ? 'not-allowed' : 'pointer', boxShadow: players.length < 2 ? 'none' : '0 6px 20px rgba(40,167,69,0.4)', transition: 'all 0.2s' }}>
-                    ▶ Начать игру
-                  </button>
+                  <button onClick={handleStartGame} disabled={players.length < 2} style={{ padding: '20px', fontSize: '20px', background: players.length < 2 ? '#6c757d' : '#28a745', color: 'white', fontWeight: 'bold', border: 'none', borderRadius: '12px', cursor: players.length < 2 ? 'not-allowed' : 'pointer' }}>▶ Начать игру</button>
                 ) : (
-                  <div style={{ padding: '20px', fontSize: '18px', textAlign: 'center', color: '#856404', background: '#fff3cd', borderRadius: '12px', border: '2px solid #ffeeba', fontWeight: 'bold' }}>
-                    ⏳ Ждем запуска хостом...
-                  </div>
+                  <div style={{ padding: '20px', fontSize: '18px', textAlign: 'center', color: '#856404', background: '#fff3cd', borderRadius: '12px', border: '2px solid #ffeeba', fontWeight: 'bold' }}>⏳ Ждем запуска хостом...</div>
                 )}
-                <button onClick={handleGoHome} style={{ padding: '15px', fontSize: '18px', background: 'transparent', color: '#dc3545', border: '2px solid #dc3545', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold', transition: 'background 0.2s' }} onMouseOver={(e) => { e.currentTarget.style.background = '#dc3545'; e.currentTarget.style.color = 'white'; }} onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#dc3545'; }}>
-                  Покинуть комнату
-                </button>
+                <button onClick={handleGoHome} style={{ padding: '15px', fontSize: '18px', background: 'transparent', color: '#dc3545', border: '2px solid #dc3545', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}>Покинуть комнату</button>
               </div>
             </div>
           </div>
@@ -417,14 +461,11 @@ function App() {
 
         ) : (
           // ==========================================
-          // ЭКРАН 4: ИГРОВОЙ СТОЛ (ПК-ВЕРСИЯ)
+          // ЭКРАН 4: ИГРОВОЙ СТОЛ
           // ==========================================
           <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '20px', boxSizing: 'border-box', position: 'relative' }}>
             
-            {/* КНОПКА СДАТЬСЯ (Верхний левый угол) */}
-            <button onClick={handleGoHome} style={{ position: 'absolute', top: '20px', left: '20px', background: 'rgba(220,53,69,0.8)', color: 'white', border: '2px solid #fff', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px', transition: 'background 0.2s' }} onMouseOver={(e) => e.currentTarget.style.background = '#dc3545'} onMouseOut={(e) => e.currentTarget.style.background = 'rgba(220,53,69,0.8)'}>
-              🏳️ Сдаться
-            </button>
+            <button onClick={handleGoHome} style={{ position: 'absolute', top: '20px', left: '20px', background: 'rgba(220,53,69,0.8)', color: 'white', border: '2px solid #fff', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}>🏳️ Сдаться</button>
 
             {/* ВЕРХНЯЯ ЗОНА: ОППОНЕНТЫ */}
             <div style={{ flex: '0 0 auto', display: 'flex', justifyContent: 'center', gap: '30px', paddingTop: '10px' }}>
@@ -435,63 +476,73 @@ function App() {
                   color: p.id === currentPlayerTurn ? '#000' : '#fff',
                   fontWeight: 'bold', border: '2px solid ' + (p.id === socket.id ? '#fff' : 'rgba(255,255,255,0.3)'),
                   boxShadow: p.id === currentPlayerTurn ? '0 0 30px rgba(255,235,59,0.6)' : 'none',
-                  fontSize: '20px', display: 'flex', alignItems: 'center', gap: '10px', transition: 'all 0.3s ease'
+                  fontSize: '20px', display: 'flex', alignItems: 'center', gap: '10px',
+                  opacity: p.isOffline ? 0.5 : 1
                 }}>
-                  👤 {p.name} {p.id === socket.id ? '(Вы)' : ''}
+                  {p.isOffline ? '👻' : '👤'} {p.name} {p.id === socket.id ? '(Вы)' : ''} {p.isOffline ? '[АФК]' : ''}
                 </div>
               ))}
             </div>
 
-            {/* ЦЕНТРАЛЬНАЯ ЗОНА: СТОЛ И ДЕЙСТВИЯ */}
-            <div style={{ flex: '1 1 auto', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '80px' }}>
+            {/* ЦЕНТРАЛЬНАЯ ЗОНА */}
+            <div style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '20px' }}>
               
-              {/* Левый блок кнопок (Опционально, для баланса композиции) */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                 {myCards.length <= 2 && (
-                  <button onClick={handleCallUno} style={{ background: '#fd7e14', color: 'white', padding: '20px 40px', fontWeight: '900', fontSize: '24px', border: '3px solid #fff', borderRadius: '12px', cursor: 'pointer', boxShadow: '0 10px 30px rgba(253,126,20,0.6)', transform: 'rotate(-5deg)' }}>
-                    КРИЧАТЬ "УНО!"
-                  </button>
-                )}
-              </div>
+              {/* ВИЗУАЛЬНЫЙ ТАЙМЕР */}
+              {turnEndTime && (
+                <div style={{ 
+                  background: timeLeft <= 5 ? '#dc3545' : '#ffc107', 
+                  color: timeLeft <= 5 ? 'white' : 'black', 
+                  padding: '10px 30px', borderRadius: '30px', fontSize: '24px', fontWeight: 'bold', 
+                  boxShadow: timeLeft <= 5 ? '0 0 20px rgba(220,53,69,0.8)' : '0 4px 10px rgba(0,0,0,0.3)',
+                  transition: 'all 0.3s', zIndex: 10
+                }}>
+                  ⏳ Время на ход: {timeLeft} сек.
+                </div>
+              )}
 
-              {/* Сам стол с картами */}
-              <div style={{ display: 'flex', gap: '40px', background: 'rgba(0,0,0,0.2)', padding: '40px 60px', borderRadius: '24px', border: '2px solid rgba(255,255,255,0.1)', boxShadow: 'inset 0 0 50px rgba(0,0,0,0.5)' }}>
-                {/* Сброс */}
-                <div>
-                  <h3 style={{ textAlign: 'center', margin: '0 0 15px 0', color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', letterSpacing: '2px' }}>На столе</h3>
-                  {topCard ? (
-                    <div style={{ 
-                      padding: '60px 30px', border: `8px solid ${topCard.color === 'black' ? '#333' : topCard.color}`, 
-                      width: '120px', height: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      borderRadius: '16px', fontWeight: '900', fontSize: '64px', background: '#fff', color: topCard.color === 'black' ? '#000' : topCard.color,
-                      boxShadow: '0 15px 35px rgba(0,0,0,0.5)', textShadow: '1px 1px 0 rgba(0,0,0,0.1)'
-                    }}>
-                      {topCard.value}
-                    </div>
-                  ) : <div style={{ width: '120px', height: '180px', border: '4px dashed rgba(255,255,255,0.3)', borderRadius: '16px' }}></div>}
+              <div style={{ display: 'flex', gap: '80px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                   {myCards.length <= 2 && (
+                    <button onClick={handleCallUno} style={{ background: '#fd7e14', color: 'white', padding: '20px 40px', fontWeight: '900', fontSize: '24px', border: '3px solid #fff', borderRadius: '12px', cursor: 'pointer', boxShadow: '0 10px 30px rgba(253,126,20,0.6)', transform: 'rotate(-5deg)' }}>
+                      КРИЧАТЬ "УНО!"
+                    </button>
+                  )}
                 </div>
 
-                {/* Колода */}
-                <div>
-                  <h3 style={{ textAlign: 'center', margin: '0 0 15px 0', color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', letterSpacing: '2px' }}>Колода</h3>
-                  <div onClick={handleDrawCard} style={{ 
-                      padding: '60px 30px', background: '#111', color: '#dc3545', border: `8px solid #fff`, 
-                      width: '120px', height: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      borderRadius: '16px', fontWeight: '900', fontSize: '32px', cursor: 'pointer', userSelect: 'none',
-                      boxShadow: '0 15px 35px rgba(0,0,0,0.5)', backgroundImage: 'radial-gradient(#333 15%, transparent 16%)', backgroundSize: '10px 10px'
-                    }}>
-                    UNO
+                <div style={{ display: 'flex', gap: '40px', background: 'rgba(0,0,0,0.2)', padding: '40px 60px', borderRadius: '24px', border: '2px solid rgba(255,255,255,0.1)', boxShadow: 'inset 0 0 50px rgba(0,0,0,0.5)' }}>
+                  <div>
+                    <h3 style={{ textAlign: 'center', margin: '0 0 15px 0', color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', letterSpacing: '2px' }}>На столе</h3>
+                    {topCard ? (
+                      <div style={{ 
+                        padding: '60px 30px', border: `8px solid ${topCard.color === 'black' ? '#333' : topCard.color}`, 
+                        width: '120px', height: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        borderRadius: '16px', fontWeight: '900', fontSize: '64px', background: '#fff', color: topCard.color === 'black' ? '#000' : topCard.color,
+                        boxShadow: '0 15px 35px rgba(0,0,0,0.5)', textShadow: '1px 1px 0 rgba(0,0,0,0.1)'
+                      }}>
+                        {topCard.value}
+                      </div>
+                    ) : <div style={{ width: '120px', height: '180px', border: '4px dashed rgba(255,255,255,0.3)', borderRadius: '16px' }}></div>}
+                  </div>
+
+                  <div>
+                    <h3 style={{ textAlign: 'center', margin: '0 0 15px 0', color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', letterSpacing: '2px' }}>Колода</h3>
+                    <div onClick={handleDrawCard} style={{ 
+                        padding: '60px 30px', background: '#111', color: '#dc3545', border: `8px solid #fff`, 
+                        width: '120px', height: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        borderRadius: '16px', fontWeight: '900', fontSize: '32px', cursor: 'pointer', userSelect: 'none',
+                        boxShadow: '0 15px 35px rgba(0,0,0,0.5)', backgroundImage: 'radial-gradient(#333 15%, transparent 16%)', backgroundSize: '10px 10px'
+                      }}>
+                      UNO
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Правый блок кнопок */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                 <button onClick={handleCatchUno} style={{ background: '#dc3545', color: 'white', padding: '20px 40px', fontWeight: '900', fontSize: '20px', border: '3px solid #fff', borderRadius: '12px', cursor: 'pointer', boxShadow: '0 10px 30px rgba(220,53,69,0.6)', transform: 'rotate(5deg)' }}>
-                  ПОЙМАТЬ<br/>НАРУШИТЕЛЯ
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                   <button onClick={handleCatchUno} style={{ background: '#dc3545', color: 'white', padding: '20px 40px', fontWeight: '900', fontSize: '20px', border: '3px solid #fff', borderRadius: '12px', cursor: 'pointer', boxShadow: '0 10px 30px rgba(220,53,69,0.6)', transform: 'rotate(5deg)' }}>
+                    ПОЙМАТЬ<br/>НАРУШИТЕЛЯ
+                  </button>
+                </div>
               </div>
-
             </div>
 
             {/* НИЖНЯЯ ЗОНА: РУКА ИГРОКА */}
@@ -503,8 +554,7 @@ function App() {
                       width: '80px', height: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center',
                       borderRadius: '12px', fontWeight: '900', fontSize: '42px', cursor: 'pointer',
                       background: '#fff', color: card.color === 'black' ? '#000' : card.color,
-                      transition: 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)', boxShadow: '0 5px 15px rgba(0,0,0,0.4)',
-                      textShadow: '1px 1px 0 rgba(0,0,0,0.1)'
+                      transition: 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)', boxShadow: '0 5px 15px rgba(0,0,0,0.4)'
                     }}
                     onMouseOver={(e) => { e.currentTarget.style.transform = 'translateY(-30px) scale(1.1)'; e.currentTarget.style.zIndex = '10'; e.currentTarget.style.boxShadow = '0 20px 40px rgba(0,0,0,0.6)'; }}
                     onMouseOut={(e) => { e.currentTarget.style.transform = 'translateY(0) scale(1)'; e.currentTarget.style.zIndex = '1'; e.currentTarget.style.boxShadow = '0 5px 15px rgba(0,0,0,0.4)'; }}
@@ -516,11 +566,9 @@ function App() {
             </div>
           </div>
         )}
-
       </div>
 
       {isJoinedRoom && <Chat socket={socket} roomId={roomId} playerName={playerName} />}
-      
     </div>
   );
 }

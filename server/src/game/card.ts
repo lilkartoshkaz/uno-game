@@ -50,10 +50,13 @@ function shuffleDeck(deck: Card[]): Card[] {
 }
 
 interface Player{
-    id: string;
+    id: string;             
+    persistentId: string;   // Вечный id из браузера
     name: string;
     hand: Card[];
     declareUno?: boolean;
+    isOffline?: boolean;    
+    disconnectTimeout?: NodeJS.Timeout; 
 }
 class UnoGame{
     players: Player[];
@@ -64,6 +67,9 @@ class UnoGame{
     declaredColor: ColorCards | null = null;
     winner: Player | null = null;
     hostId: string | null = null; 
+    turnTimeout: NodeJS.Timeout | null = null;
+    turnEndTime: number | null = null; 
+    onTurnChange: (() => void) | null = null; // Специальный коллбэк для связи с index.ts 
 
     // методы для управления игрой, например, раздача карт, обработка ходов, проверка победителя
     constructor() {
@@ -75,13 +81,36 @@ class UnoGame{
         this.declaredColor = null;
         this.winner = null; 
     }
-    addPlayer(id: string, name: string) {
-        const newPlayer: Player = { id, name, hand: []};
-        if (this.players.length === 0){
-            this.hostId = id;
+    addPlayer(socketId: string, name: string, persistentId: string) {
+        // 1. Ищем, есть ли уже такой игрок в комнате
+        const existingPlayer = this.players.find(p => p.persistentId === persistentId);
+
+        if (existingPlayer) {
+            existingPlayer.id = socketId;
+            existingPlayer.isOffline = false; // Снимаем статус "офлайн"
+            
+            // Если тикал таймер удаления — отменяем его!
+            if (existingPlayer.disconnectTimeout) {
+                clearTimeout(existingPlayer.disconnectTimeout);
+            }
+            return existingPlayer;
         }
-        this.players.push(newPlayer); 
+
+        // 2. ЕСЛИ ЭТО АБСОЛЮТНО НОВЫЙ ИГРОК
+        const newPlayer: Player = { 
+            id: socketId, 
+            persistentId: persistentId, 
+            name: name, 
+            hand: [],
+            isOffline: false
+        };
+
+        if (this.players.length === 0){
+            this.hostId = socketId; // Первый зашедший становится хостом
+        }
         
+        this.players.push(newPlayer);
+        return newPlayer;
     }
     startGame() {
         // раздаем по 7 карт каждому игроку
@@ -98,6 +127,7 @@ class UnoGame{
         if (firstCard) {
             this.discardPile.push(firstCard);
         }
+        this.resetTimer()
     }
     
     canPlayCard(cardToPlay: Card, topCardOnTable: Card): boolean {
@@ -177,7 +207,7 @@ class UnoGame{
         }
             
         this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
-
+        this.resetTimer();
     }
     drawCard(playerId: string) {
         // проверяем, что игрок может ходить 
@@ -202,7 +232,7 @@ class UnoGame{
        
         this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
         
-
+        this.resetTimer();
     }
     reshuffleDeck() {
         if (this.discardPile.length <= 1){
@@ -235,6 +265,42 @@ class UnoGame{
         }
         violator.declareUno = false;
         return violator;
+    }
+    resetTimer() {
+        // Убиваем старый таймер, если он был
+        if (this.turnTimeout) clearTimeout(this.turnTimeout);
+        if (this.winner) return; 
+
+        const TIME_LIMIT = 30000; 
+        this.turnEndTime = Date.now() + TIME_LIMIT;
+
+        // Заводим новый будильник
+        this.turnTimeout = setTimeout(() => {
+            this.handleAfk();
+        }, TIME_LIMIT);
+    }
+
+    stopTimer() {
+        if (this.turnTimeout) clearTimeout(this.turnTimeout);
+    }
+
+    handleAfk() {
+        const currentPlayer = this.players[this.currentPlayerIndex];
+        if (!currentPlayer) return;
+       
+        if (this.deck.length === 0) this.reshuffleDeck();
+        const card = this.deck.pop();
+        if (card) currentPlayer.hand.push(card);
+        currentPlayer.declareUno = false;
+
+        // Передаем ход следующему
+        this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
+
+        // Перезапускаем таймер для нового игрока
+        this.resetTimer();
+
+        // Дергаем коллбэк, чтобы сервер разослал всем новые карты и ход
+        if (this.onTurnChange) this.onTurnChange();
     }
 
 }
