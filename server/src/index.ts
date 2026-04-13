@@ -310,7 +310,7 @@ io.on('connection', (socket: CustomSocket) => {
         roomManager.deleteRoom(roomId);
         broadcastRooms();
       } else {
-        // Если игроков было много, просто передаем ход и уведомляем остальных
+        
         if (game.hostId === socket.id) {
             game.hostId = game.players[0]?.id || null;
         }

@@ -82,14 +82,19 @@ class UnoGame{
         this.winner = null; 
     }
     addPlayer(socketId: string, name: string, persistentId: string) {
-        // 1. Ищем, есть ли уже такой игрок в комнате
         const existingPlayer = this.players.find(p => p.persistentId === persistentId);
 
         if (existingPlayer) {
-            existingPlayer.id = socketId;
-            existingPlayer.isOffline = false; // Снимаем статус "офлайн"
+            // --- НОВЫЙ ФИКС ХОСТА ---
+            // Если вернувшийся игрок был создателем комнаты, отдаем корону новому сокету
+            if (this.hostId === existingPlayer.id) {
+                this.hostId = socketId;
+            }
+            // ------------------------
             
-            // Если тикал таймер удаления — отменяем его!
+            existingPlayer.id = socketId;
+            existingPlayer.isOffline = false; 
+            
             if (existingPlayer.disconnectTimeout) {
                 clearTimeout(existingPlayer.disconnectTimeout);
             }
@@ -304,6 +309,7 @@ class UnoGame{
     }
 
 }
+
 export type { Card, Player };
 export { UnoGame, createDeck, shuffleDeck };
 export type { ColorCards, ValueCards };

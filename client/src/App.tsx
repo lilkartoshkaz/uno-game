@@ -1,11 +1,10 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { io, Socket } from "socket.io-client";
 import './App.css';
 
 const socket = io("http://localhost:3001");
 
 // --- ЛОГИКА ВЕЧНОГО ID ---
-// Генерируем уникальный ID для браузера и сохраняем навсегда
 const getPersistentId = () => {
   let id = localStorage.getItem('uno_persistent_id');
   if (!id) {
@@ -13,6 +12,11 @@ const getPersistentId = () => {
     localStorage.setItem('uno_persistent_id', id);
   }
   return id;
+};
+
+const getCardImage = (card: Card) => {
+  const fileName = `${card.color}_${card.value}.jpg`;
+  return `/cards/${fileName}`;
 };
 
 const PERSISTENT_ID = getPersistentId();
@@ -35,7 +39,6 @@ interface RoomInfo {
   playersCount: number;
 }
 
-// --- ЧАТ ---
 interface ChatMessage {
   messageId: string;
   roomId: string;
@@ -43,7 +46,9 @@ interface ChatMessage {
   text: string;
 }
 
-const Chat = ({ socket, roomId, playerName }: { socket: Socket, roomId: string, playerName: string }) => {
+// --- ЧАТ ---
+// Добавили пропс onError, чтобы чат мог вызывать глобальную красивую ошибку вместо alert
+const Chat = ({ socket, roomId, playerName, onError }: { socket: Socket, roomId: string, playerName: string, onError: (msg: string) => void }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [lastSentTime, setLastSentTime] = useState<number>(0);
@@ -58,7 +63,7 @@ const Chat = ({ socket, roomId, playerName }: { socket: Socket, roomId: string, 
       }
     };
     const handleSpam = (err: { messageId: string, text: string }) => {
-      alert(err.text);
+      onError(err.text); // Заменили alert
       setMessages((prev) => prev.filter((m) => m.messageId !== err.messageId));
     };
 
@@ -69,7 +74,7 @@ const Chat = ({ socket, roomId, playerName }: { socket: Socket, roomId: string, 
       socket.off('new_message', handleNewMessage);
       socket.off('spam_error', handleSpam);
     };
-  }, [socket, isOpen, playerName]);
+  }, [socket, isOpen, playerName, onError]);
 
   const sendMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,7 +82,7 @@ const Chat = ({ socket, roomId, playerName }: { socket: Socket, roomId: string, 
 
     const now = Date.now();
     if (now - lastSentTime < 1000) {
-      alert("Не так быстро! Подожди секунду.");
+      onError("Не так быстро! Подожди секунду."); // Заменили alert
       return; 
     }
 
@@ -182,7 +187,6 @@ function App() {
   
   const [roomId, setRoomId] = useState<string>('');
   
-  // Достаем имя из localStorage, чтобы не вводить после F5
   const [playerName, setPlayerName] = useState<string>(localStorage.getItem('uno_playerName') || '');
   const playerNameRef = useRef(playerName);
   
@@ -200,6 +204,10 @@ function App() {
   const [turnEndTime, setTurnEndTime] = useState<number | null>(null);
   const [timeLeft, setTimeLeft] = useState<number>(0);
 
+  // Стейты для кастомных окон
+  const [customAlert, setCustomAlert] = useState<string | null>(null);
+  const [colorPicker, setColorPicker] = useState<{ isOpen: boolean, cardIndex: number | null }>({ isOpen: false, cardIndex: null });
+
   useEffect(() => {
     playerNameRef.current = playerName;
   }, [playerName]);
@@ -207,25 +215,19 @@ function App() {
   // Визуальный отсчет таймера
   useEffect(() => {
     if (!turnEndTime) return;
-
     const calculateTime = () => Math.max(0, Math.floor((turnEndTime - Date.now()) / 1000));
-
     const interval = setInterval(() => {
       setTimeLeft(calculateTime());
     }, 1000);
-
     return () => clearInterval(interval);
   }, [turnEndTime]);
 
   useEffect(() => {
     socket.on("connect", () => {
       setIsConnected(true);
-      
-      // АВТОРЕКОННЕКТ: Проверяем, был ли игрок в комнате до разрыва связи
       const savedRoomId = sessionStorage.getItem('uno_roomId');
       if (savedRoomId && playerNameRef.current) {
         setRoomId(savedRoomId);
-        // Передаем PERSISTENT_ID на сервер
         socket.emit('join_room', savedRoomId, playerNameRef.current, PERSISTENT_ID);
       }
     });
@@ -236,15 +238,14 @@ function App() {
     socket.on("room_created", (code: string) => {
       setRoomId(code);
       setHostId(socket.id || null); 
-      sessionStorage.setItem('uno_roomId', code); // Запоминаем комнату
+      sessionStorage.setItem('uno_roomId', code); 
       socket.emit('join_room', code, playerNameRef.current, PERSISTENT_ID);
     });
 
     socket.on("player_joined", (serverPlayers: Player[]) => setPlayers(serverPlayers));
     
     socket.on("error_event", (message: string) => {
-      alert("Ошибка: " + message);
-      // Если комната удалена или не существует, сбрасываем кэш
+      setCustomAlert(message); // Заменили alert
       if (message.includes("Нет такой комнаты")) {
         sessionStorage.removeItem('uno_roomId');
         setRoomId('');
@@ -262,7 +263,7 @@ function App() {
 
     socket.on("game_over", (winnerName: string) => {
       setWinner(winnerName);
-      sessionStorage.removeItem('uno_roomId'); // Игра окончена, чистим сессию
+      sessionStorage.removeItem('uno_roomId'); 
     });
     
     socket.on("system_message", (msg: string) => {
@@ -279,59 +280,68 @@ function App() {
   }, []);
 
   const handleCreateRoom = () => {
-    if (!playerName.trim()) return alert("Сначала введи свое имя!");
-    localStorage.setItem('uno_playerName', playerName); // Сохраняем имя
+    if (!playerName.trim()) return setCustomAlert("Сначала введи свое имя!");
+    localStorage.setItem('uno_playerName', playerName); 
     socket.emit('create_room');
   };
 
   const handleJoinRoom = (code: string) => {
-    if (!playerName.trim()) return alert("Сначала введи свое имя!");
-    localStorage.setItem('uno_playerName', playerName); // Сохраняем имя
-    sessionStorage.setItem('uno_roomId', code); // Запоминаем комнату
+    if (!playerName.trim()) return setCustomAlert("Сначала введи свое имя!");
+    localStorage.setItem('uno_playerName', playerName); 
+    sessionStorage.setItem('uno_roomId', code); 
     setRoomId(code);
-    socket.emit('join_room', code, playerName, PERSISTENT_ID); // Отправляем ID
+    socket.emit('join_room', code, playerName, PERSISTENT_ID); 
   };
 
   const handleJoinManual = () => {
-    const code = prompt("Введите код комнаты:");
+    const code = window.prompt("Введите код комнаты:"); // Оставляем системный для ввода текста
     if (code) handleJoinRoom(code);
   };
 
   const handleDrawCard = () => {
-    if (currentPlayerTurn !== socket.id) return alert("Сейчас не твой ход!");
+    if (currentPlayerTurn !== socket.id) return setCustomAlert("Сейчас не твой ход!");
     socket.emit('draw_card', roomId);
   };
 
   const handleStartGame = () => socket.emit('start_game', roomId);
 
   const handlePlayCard = (index: number) => {
-    if (currentPlayerTurn !== socket.id) return alert("Сейчас не твой ход!");
+    if (currentPlayerTurn !== socket.id) return setCustomAlert("Сейчас не твой ход!");
     const card = myCards[index];
-    let declaredColor: string | undefined = undefined;
 
     if (card.color === 'black') {
-      const input = prompt("Выбери цвет: red, blue, green или yellow");
-      if (input && ['red', 'blue', 'green', 'yellow'].includes(input.toLowerCase())) {
-        declaredColor = input.toLowerCase();
-      } else {
-        return alert("Неверный цвет, ход отменен!");
-      }
+      // Открываем красивое окно выбора цвета вместо prompt
+      setColorPicker({ isOpen: true, cardIndex: index });
+      return; 
     }
-    socket.emit('play_card', roomId, index, declaredColor);
+    
+    socket.emit('play_card', roomId, index, undefined);
+  };
+
+  // ФУНКЦИЯ ДЛЯ ВЫБОРА ЦВЕТА ИЗ ОКНА
+  const handleColorSelect = (color: string) => {
+    if (colorPicker.cardIndex !== null) {
+      socket.emit('play_card', roomId, colorPicker.cardIndex, color);
+      
+      // Автоматически пишем в чат, чтобы все видели выбор!
+      const colorNames: Record<string, string> = { red: 'КРАСНЫЙ ❤️', blue: 'СИНИЙ 💙', green: 'ЗЕЛЕНЫЙ 💚', yellow: 'ЖЕЛТЫЙ 💛' };
+      socket.emit('send_message', {
+        messageId: Math.random().toString(36).substring(2, 9),
+        roomId,
+        senderName: 'Система',
+        text: `Игрок ${playerName} заказал цвет: ${colorNames[color]}`
+      });
+    }
+    setColorPicker({ isOpen: false, cardIndex: null });
   };
 
   const handleCallUno = () => socket.emit('call_uno', roomId);
   const handleCatchUno = () => socket.emit('catch_uno', roomId);
 
-const handleGoHome = () => {
+  const handleGoHome = () => {
     if (window.confirm("Вы точно хотите сдаться? Игра закончится для всех.")) {
-      // 1. Отправляем специальное событие сдачи
       socket.emit('surrender', roomId);
-      
-      // 2. Очищаем комнату из памяти браузера, чтобы реконнект не сработал
       sessionStorage.removeItem('uno_roomId');
-      
-      // 3. Перезагружаем
       window.location.reload(); 
     }
   };
@@ -350,6 +360,35 @@ const handleGoHome = () => {
       transition: 'background 0.5s ease', overflowX: 'hidden', overflowY: 'auto'
     }}>
       
+      {/* КРАСИВОЕ МОДАЛЬНОЕ ОКНО ОШИБКИ */}
+      {customAlert && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', zIndex: 100000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: 'white', padding: '30px 40px', borderRadius: '15px', textAlign: 'center', maxWidth: '400px', boxShadow: '0 10px 40px rgba(0,0,0,0.5)', border: '2px solid #dc3545' }}>
+            <h2 style={{ color: '#dc3545', margin: '0 0 15px 0', fontSize: '28px' }}>Внимание!</h2>
+            <p style={{ color: '#333', fontSize: '18px', marginBottom: '25px', fontWeight: 'bold' }}>{customAlert}</p>
+            <button onClick={() => setCustomAlert(null)} style={{ background: '#007BFF', color: 'white', border: 'none', padding: '12px 35px', fontSize: '18px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 4px 10px rgba(0,123,255,0.3)' }}>Понятно</button>
+          </div>
+        </div>
+      )}
+
+      {/* КРАСИВОЕ МОДАЛЬНОЕ ОКНО ВЫБОРА ЦВЕТА */}
+      {colorPicker.isOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.85)', zIndex: 100000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#212529', padding: '40px', borderRadius: '24px', textAlign: 'center', border: '3px solid #ffc107', boxShadow: '0 10px 50px rgba(255,193,7,0.3)' }}>
+            <h2 style={{ color: 'white', margin: '0 0 30px 0', fontSize: '24px', letterSpacing: '1px' }}>Какую масть заказываем?</h2>
+            
+            <div style={{ display: 'flex', gap: '20px', justifyContent: 'center' }}>
+              <button onClick={() => handleColorSelect('red')} style={{ width: '90px', height: '120px', background: '#dc3545', borderRadius: '12px', border: '4px solid white', cursor: 'pointer', transition: 'transform 0.2s', boxShadow: '0 5px 15px rgba(220,53,69,0.5)' }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}></button>
+              <button onClick={() => handleColorSelect('blue')} style={{ width: '90px', height: '120px', background: '#007BFF', borderRadius: '12px', border: '4px solid white', cursor: 'pointer', transition: 'transform 0.2s', boxShadow: '0 5px 15px rgba(0,123,255,0.5)' }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}></button>
+              <button onClick={() => handleColorSelect('green')} style={{ width: '90px', height: '120px', background: '#28a745', borderRadius: '12px', border: '4px solid white', cursor: 'pointer', transition: 'transform 0.2s', boxShadow: '0 5px 15px rgba(40,167,69,0.5)' }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}></button>
+              <button onClick={() => handleColorSelect('yellow')} style={{ width: '90px', height: '120px', background: '#ffc107', borderRadius: '12px', border: '4px solid white', cursor: 'pointer', transition: 'transform 0.2s', boxShadow: '0 5px 15px rgba(255,193,7,0.5)' }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}></button>
+            </div>
+
+            <button onClick={() => setColorPicker({isOpen: false, cardIndex: null})} style={{ marginTop: '30px', background: 'transparent', color: '#6c757d', border: '2px solid #6c757d', padding: '10px 30px', fontSize: '16px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>Отменить ход</button>
+          </div>
+        </div>
+      )}
+
       {systemMessage && (
         <div style={{
           position: 'fixed', top: '30px', left: '50%', transform: 'translateX(-50%)',
@@ -465,7 +504,7 @@ const handleGoHome = () => {
           // ==========================================
           <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '20px', boxSizing: 'border-box', position: 'relative' }}>
             
-            <button onClick={handleGoHome} style={{ position: 'absolute', top: '20px', left: '20px', background: 'rgba(220,53,69,0.8)', color: 'white', border: '2px solid #fff', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}>🏳️ Сдаться</button>
+            <button onClick={handleGoHome} style={{ position: 'absolute', top: '20px', left: '20px', background: 'rgba(220,53,69,0.8)', color: 'white', border: '2px solid #fff', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px', zIndex: 50 }}>🏳️ Сдаться</button>
 
             {/* ВЕРХНЯЯ ЗОНА: ОППОНЕНТЫ */}
             <div style={{ flex: '0 0 auto', display: 'flex', justifyContent: 'center', gap: '30px', paddingTop: '10px' }}>
@@ -510,30 +549,38 @@ const handleGoHome = () => {
                 </div>
 
                 <div style={{ display: 'flex', gap: '40px', background: 'rgba(0,0,0,0.2)', padding: '40px 60px', borderRadius: '24px', border: '2px solid rgba(255,255,255,0.1)', boxShadow: 'inset 0 0 50px rgba(0,0,0,0.5)' }}>
+                  {/* Сброс (Карта на столе) */}
                   <div>
                     <h3 style={{ textAlign: 'center', margin: '0 0 15px 0', color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', letterSpacing: '2px' }}>На столе</h3>
                     {topCard ? (
-                      <div style={{ 
-                        padding: '60px 30px', border: `8px solid ${topCard.color === 'black' ? '#333' : topCard.color}`, 
-                        width: '120px', height: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        borderRadius: '16px', fontWeight: '900', fontSize: '64px', background: '#fff', color: topCard.color === 'black' ? '#000' : topCard.color,
-                        boxShadow: '0 15px 35px rgba(0,0,0,0.5)', textShadow: '1px 1px 0 rgba(0,0,0,0.1)'
-                      }}>
-                        {topCard.value}
-                      </div>
-                    ) : <div style={{ width: '120px', height: '180px', border: '4px dashed rgba(255,255,255,0.3)', borderRadius: '16px' }}></div>}
+                      <img 
+                        src={getCardImage(topCard)} 
+                        alt={`${topCard.color} ${topCard.value}`} 
+                        style={{ 
+                          width: '120px', height: '180px', borderRadius: '16px', 
+                          boxShadow: '0 15px 35px rgba(0,0,0,0.5)', objectFit: 'contain' 
+                        }} 
+                        onError={(e) => (e.currentTarget.src = "/cards/back.jpg")}
+                      />
+                    ) : (
+                      <div style={{ width: '120px', height: '180px', border: '4px dashed rgba(255,255,255,0.3)', borderRadius: '16px' }}></div>
+                    )}
                   </div>
 
+                  {/* Колода */}
                   <div>
                     <h3 style={{ textAlign: 'center', margin: '0 0 15px 0', color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', letterSpacing: '2px' }}>Колода</h3>
-                    <div onClick={handleDrawCard} style={{ 
-                        padding: '60px 30px', background: '#111', color: '#dc3545', border: `8px solid #fff`, 
-                        width: '120px', height: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        borderRadius: '16px', fontWeight: '900', fontSize: '32px', cursor: 'pointer', userSelect: 'none',
-                        boxShadow: '0 15px 35px rgba(0,0,0,0.5)', backgroundImage: 'radial-gradient(#333 15%, transparent 16%)', backgroundSize: '10px 10px'
-                      }}>
-                      UNO
-                    </div>
+                    <img 
+                      onClick={handleDrawCard}
+                      src="/cards/back.jpg" 
+                      alt="Колода" 
+                      style={{ 
+                        width: '120px', height: '180px', cursor: 'pointer', borderRadius: '16px', 
+                        boxShadow: '0 15px 35px rgba(0,0,0,0.5)', transition: 'transform 0.2s', objectFit: 'contain'
+                      }} 
+                      onMouseOver={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+                      onMouseOut={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                    />
                   </div>
                 </div>
 
@@ -549,18 +596,27 @@ const handleGoHome = () => {
             <div style={{ flex: '0 0 auto', padding: '20px', background: 'rgba(0,0,0,0.4)', borderRadius: '24px 24px 0 0', borderTop: '2px solid rgba(255,255,255,0.1)', width: '100%', maxWidth: '1400px', margin: '0 auto' }}>
               <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap', justifyContent: 'center' }}>
                 {myCards.map((card, index) => (
-                  <div key={index} onClick={() => handlePlayCard(index)} style={{ 
-                      padding: '40px 15px', border: `6px solid ${card.color === 'black' ? '#333' : card.color}`, 
-                      width: '80px', height: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      borderRadius: '12px', fontWeight: '900', fontSize: '42px', cursor: 'pointer',
-                      background: '#fff', color: card.color === 'black' ? '#000' : card.color,
-                      transition: 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)', boxShadow: '0 5px 15px rgba(0,0,0,0.4)'
+                  <img 
+                    key={index} 
+                    onClick={() => handlePlayCard(index)} 
+                    src={getCardImage(card)}
+                    alt={`${card.color} ${card.value}`}
+                    style={{ 
+                      width: '100px', cursor: 'pointer', transition: 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)', 
+                      boxShadow: '0 5px 15px rgba(0,0,0,0.4)', borderRadius: '12px', objectFit: 'contain'
                     }}
-                    onMouseOver={(e) => { e.currentTarget.style.transform = 'translateY(-30px) scale(1.1)'; e.currentTarget.style.zIndex = '10'; e.currentTarget.style.boxShadow = '0 20px 40px rgba(0,0,0,0.6)'; }}
-                    onMouseOut={(e) => { e.currentTarget.style.transform = 'translateY(0) scale(1)'; e.currentTarget.style.zIndex = '1'; e.currentTarget.style.boxShadow = '0 5px 15px rgba(0,0,0,0.4)'; }}
-                  >
-                    {card.value}
-                  </div>
+                    onMouseOver={(e) => { 
+                      e.currentTarget.style.transform = 'translateY(-30px) scale(1.1)'; 
+                      e.currentTarget.style.zIndex = '10'; 
+                      e.currentTarget.style.boxShadow = '0 20px 40px rgba(0,0,0,0.6)'; 
+                    }}
+                    onMouseOut={(e) => { 
+                      e.currentTarget.style.transform = 'translateY(0) scale(1)'; 
+                      e.currentTarget.style.zIndex = '1'; 
+                      e.currentTarget.style.boxShadow = '0 5px 15px rgba(0,0,0,0.4)'; 
+                    }}
+                    onError={(e) => (e.currentTarget.src = "/cards/back.jpg")}
+                  />
                 ))}
               </div>
             </div>
@@ -568,7 +624,7 @@ const handleGoHome = () => {
         )}
       </div>
 
-      {isJoinedRoom && <Chat socket={socket} roomId={roomId} playerName={playerName} />}
+      {isJoinedRoom && <Chat socket={socket} roomId={roomId} playerName={playerName} onError={setCustomAlert} />}
     </div>
   );
 }
