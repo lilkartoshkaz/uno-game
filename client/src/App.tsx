@@ -1,195 +1,26 @@
 import { useEffect, useState, useRef } from 'react';
-import { io, Socket } from "socket.io-client";
+import { io } from "socket.io-client";
 import './App.css';
+import { type Card, type Player, type RoomInfo } from './types';
+import { PERSISTENT_ID } from './utils';
+import { Chat } from './components/Chat';
+import { AlertModal, ColorPickerModal } from './components/Modals';
+import { MainMenu, Lobby, GameBoard, VictoryScreen } from './components/Screens';
+import { LoadingScreen } from './components/LoadingScreen';
+import { translations, type Language } from './i18n';
 
 const socket = io("http://localhost:3001");
 
-// --- ЛОГИКА ВЕЧНОГО ID ---
-const getPersistentId = () => {
-  let id = localStorage.getItem('uno_persistent_id');
-  if (!id) {
-    id = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-    localStorage.setItem('uno_persistent_id', id);
-  }
-  return id;
-};
-
-const getCardImage = (card: Card) => {
-  const fileName = `${card.color}_${card.value}.jpg`;
-  return `/cards/${fileName}`;
-};
-
-const PERSISTENT_ID = getPersistentId();
-
-interface Card {
-  color: string;
-  value: string;
-}
-
-interface Player {
-  id: string;
-  name: string;
-  hand?: Card[];
-  isOffline?: boolean;
-  persistentId?: string;
-}
-
-interface RoomInfo {
-  id: string;
-  playersCount: number;
-}
-
-interface ChatMessage {
-  messageId: string;
-  roomId: string;
-  senderName: string;
-  text: string;
-}
-
-// --- ЧАТ ---
-// Добавили пропс onError, чтобы чат мог вызывать глобальную красивую ошибку вместо alert
-const Chat = ({ socket, roomId, playerName, onError }: { socket: Socket, roomId: string, playerName: string, onError: (msg: string) => void }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  const [lastSentTime, setLastSentTime] = useState<number>(0);
-  const [isOpen, setIsOpen] = useState<boolean>(false);
-  const [unreadCount, setUnreadCount] = useState<number>(0);
-
-  useEffect(() => {
-    const handleNewMessage = (msg: ChatMessage) => {
-      setMessages((prev) => [...prev, msg]);
-      if (!isOpen && msg.senderName !== playerName) {
-        setUnreadCount((prev) => prev + 1);
-      }
-    };
-    const handleSpam = (err: { messageId: string, text: string }) => {
-      onError(err.text); // Заменили alert
-      setMessages((prev) => prev.filter((m) => m.messageId !== err.messageId));
-    };
-
-    socket.on('new_message', handleNewMessage);
-    socket.on('spam_error', handleSpam);
-
-    return () => {
-      socket.off('new_message', handleNewMessage);
-      socket.off('spam_error', handleSpam);
-    };
-  }, [socket, isOpen, playerName, onError]);
-
-  const sendMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatInput.trim() || !roomId || !playerName) return;
-
-    const now = Date.now();
-    if (now - lastSentTime < 1000) {
-      onError("Не так быстро! Подожди секунду."); // Заменили alert
-      return; 
-    }
-
-    setLastSentTime(now);
-
-    const newMsg: ChatMessage = {
-      messageId: Math.random().toString(36).substring(2, 9),
-      roomId,
-      senderName: playerName,
-      text: chatInput.trim(),
-    };
-
-    setMessages((prev) => [...prev, newMsg]);
-    socket.emit('send_message', newMsg);
-    setChatInput('');
-  };
-
-  if (!roomId) return null;
-
-  return (
-    <>
-      {!isOpen && (
-        <div 
-          onClick={() => {
-            setIsOpen(true);
-            setUnreadCount(0);
-          }}
-          style={{
-            position: 'fixed', bottom: '30px', right: '30px', width: '60px', height: '60px',
-            background: '#4CAF50', borderRadius: '50%', display: 'flex', justifyContent: 'center',
-            alignItems: 'center', cursor: 'pointer', boxShadow: '0 4px 15px rgba(0,0,0,0.4)',
-            zIndex: 9999, transition: 'transform 0.2s'
-          }}
-          onMouseOver={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
-          onMouseOut={(e) => e.currentTarget.style.transform = 'scale(1)'}
-        >
-          <span style={{ fontSize: '28px' }}>💬</span>
-          {unreadCount > 0 && (
-            <div style={{
-              position: 'absolute', top: '-5px', right: '-5px', background: '#dc3545', color: 'white',
-              borderRadius: '50%', width: '24px', height: '24px', display: 'flex', justifyContent: 'center',
-              alignItems: 'center', fontSize: '12px', fontWeight: 'bold', border: '2px solid white'
-            }}>
-              {unreadCount}
-            </div>
-          )}
-        </div>
-      )}
-
-      {isOpen && (
-        <div style={{
-          position: 'fixed', bottom: '30px', right: '30px', width: '350px', height: '450px',
-          background: '#fff', borderRadius: '12px', display: 'flex', flexDirection: 'column',
-          boxShadow: '0 10px 30px rgba(0,0,0,0.3)', zIndex: 9999, overflow: 'hidden', fontFamily: 'sans-serif',
-          border: '1px solid #ddd'
-        }}>
-          <div style={{ background: '#212529', color: '#fff', padding: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 'bold', fontSize: '16px' }}>Чат комнаты ({roomId})</span>
-            <button onClick={() => setIsOpen(false)} style={{ background: 'none', border: 'none', color: '#fff', fontSize: '18px', cursor: 'pointer' }}>✖</button>
-          </div>
-
-          <div style={{ flex: 1, padding: '15px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', background: '#f8f9fa' }}>
-            {messages.length === 0 && <p style={{ textAlign: 'center', color: '#adb5bd', fontSize: '14px', margin: 'auto' }}>Здесь пока тихо...</p>}
-            {messages.map((msg) => {
-              const isMine = msg.senderName === playerName;
-              return (
-                <div key={msg.messageId} style={{
-                  alignSelf: isMine ? 'flex-end' : 'flex-start',
-                  background: isMine ? '#28a745' : '#e9ecef',
-                  color: isMine ? '#fff' : '#212529',
-                  padding: '10px 14px', borderRadius: '15px', 
-                  borderBottomRightRadius: isMine ? '4px' : '15px',
-                  borderBottomLeftRadius: !isMine ? '4px' : '15px',
-                  fontSize: '15px', maxWidth: '85%', wordBreak: 'break-word',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
-                }}>
-                  {!isMine && <span style={{ fontSize: '12px', fontWeight: 'bold', display: 'block', color: '#6c757d', marginBottom: '4px' }}>{msg.senderName}</span>}
-                  {msg.text}
-                </div>
-              );
-            })}
-          </div>
-
-          <form onSubmit={sendMessage} style={{ display: 'flex', borderTop: '1px solid #dee2e6', background: 'white', padding: '12px' }}>
-            <input 
-              value={chatInput} 
-              onChange={(e) => setChatInput(e.target.value)}
-              placeholder="Введите сообщение..."
-              style={{ flex: 1, padding: '12px 15px', border: '1px solid #ced4da', borderRadius: '25px', outline: 'none', fontSize: '15px', background: '#f8f9fa', color: '#212529' }}
-            />
-            <button type="submit" style={{ background: '#28a745', color: '#fff', border: 'none', width: '45px', height: '45px', borderRadius: '50%', marginLeft: '10px', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '18px' }}>➤</button>
-          </form>
-        </div>
-      )}
-    </>
-  );
-};
-
-// --- ОСНОВНОЕ ПРИЛОЖЕНИЕ ---
 function App() {
+  // --- ОБЪЯВЛЯЕМ ЯЗЫК И ПЕРЕМЕННУЮ t ПРЯМО ЗДЕСЬ ---
+  const [lang, setLang] = useState<Language>('ru'); 
+  const t = translations[lang];
+
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isConnected, setIsConnected] = useState<boolean>(socket.connected);
-  
   const [roomId, setRoomId] = useState<string>('');
-  
   const [playerName, setPlayerName] = useState<string>(localStorage.getItem('uno_playerName') || '');
   const playerNameRef = useRef(playerName);
-  
   const [players, setPlayers] = useState<Player[]>([]); 
   const [hostId, setHostId] = useState<string | null>(null);
   const [availableRooms, setAvailableRooms] = useState<RoomInfo[]>([]);
@@ -203,22 +34,28 @@ function App() {
 
   const [turnEndTime, setTurnEndTime] = useState<number | null>(null);
   const [timeLeft, setTimeLeft] = useState<number>(0);
-
-  // Стейты для кастомных окон
   const [customAlert, setCustomAlert] = useState<string | null>(null);
   const [colorPicker, setColorPicker] = useState<{ isOpen: boolean, cardIndex: number | null }>({ isOpen: false, cardIndex: null });
 
-  useEffect(() => {
-    playerNameRef.current = playerName;
-  }, [playerName]);
+  // Функция перевода серверных ошибок
+  const translateError = (msg: string) => {
+    if (msg.includes("Нет такой комнаты")) return t.errors.noRoom;
+    if (msg.includes("Сначала введи свое имя!")) return t.errors.enterName;
+    if (msg.includes("Сейчас не твой ход!")) return t.errors.notYourTurn;
+    if (msg.includes("Неверный цвет, ход отменен!")) return t.errors.invalidColor;
+    if (msg.includes("Только создатель может начать игру")) return t.errors.onlyHostStart;
+    if (msg.includes("Недостаточно игроков")) return t.errors.notEnoughPlayers;
+    return msg; 
+  };
 
-  // Визуальный отсчет таймера
+  const showError = (msg: string) => setCustomAlert(translateError(msg));
+
+  useEffect(() => { playerNameRef.current = playerName; }, [playerName]);
+
   useEffect(() => {
     if (!turnEndTime) return;
     const calculateTime = () => Math.max(0, Math.floor((turnEndTime - Date.now()) / 1000));
-    const interval = setInterval(() => {
-      setTimeLeft(calculateTime());
-    }, 1000);
+    const interval = setInterval(() => setTimeLeft(calculateTime()), 1000);
     return () => clearInterval(interval);
   }, [turnEndTime]);
 
@@ -227,404 +64,180 @@ function App() {
       setIsConnected(true);
       const savedRoomId = sessionStorage.getItem('uno_roomId');
       if (savedRoomId && playerNameRef.current) {
+        setIsLoading(true);
         setRoomId(savedRoomId);
         socket.emit('join_room', savedRoomId, playerNameRef.current, PERSISTENT_ID);
       }
     });
     
     socket.on("disconnect", () => setIsConnected(false));
-    socket.on("available_rooms", (rooms: RoomInfo[]) => setAvailableRooms(rooms));
+    
+    socket.on("available_rooms", (rooms: RoomInfo[]) => {
+      setAvailableRooms(rooms);
+      if (!sessionStorage.getItem('uno_roomId')) {
+        setTimeout(() => setIsLoading(false), 800);
+      }
+    });
     
     socket.on("room_created", (code: string) => {
-      setRoomId(code);
+      setRoomId(code); 
       setHostId(socket.id || null); 
       sessionStorage.setItem('uno_roomId', code); 
       socket.emit('join_room', code, playerNameRef.current, PERSISTENT_ID);
     });
 
-    socket.on("player_joined", (serverPlayers: Player[]) => setPlayers(serverPlayers));
+    socket.on("player_joined", (serverPlayers: Player[]) => {
+      setPlayers(serverPlayers);
+      setTimeout(() => setIsLoading(false), 1200); 
+    });
     
     socket.on("error_event", (message: string) => {
-      setCustomAlert(message); // Заменили alert
-      if (message.includes("Нет такой комнаты")) {
-        sessionStorage.removeItem('uno_roomId');
-        setRoomId('');
+      showError(message);
+      setIsLoading(false);
+      if (message.includes("Нет такой комнаты")) { 
+        sessionStorage.removeItem('uno_roomId'); 
+        setRoomId(''); 
       }
     });
     
     socket.on("your_cards", (cards: Card[]) => setMyCards(cards));
 
     socket.on("game_started", (data: { topCard: Card, currentPlayerId: string, turnEndTime?: number }) => {
-      setTopCard(data.topCard);
+      setTopCard(data.topCard); 
       setCurrentPlayerTurn(data.currentPlayerId);
       if (data.turnEndTime) setTurnEndTime(data.turnEndTime);
       setIsGameStarted(true); 
+      setTimeout(() => setIsLoading(false), 1500); 
     });
 
     socket.on("game_over", (winnerName: string) => {
-      setWinner(winnerName);
+      setWinner(winnerName); 
       sessionStorage.removeItem('uno_roomId'); 
+      setIsLoading(false);
     });
     
     socket.on("system_message", (msg: string) => {
-      setSystemMessage(msg);
+      setSystemMessage(msg); 
       setTimeout(() => setSystemMessage(null), 3000);
     });
 
     return () => {
       socket.off("connect"); socket.off("disconnect"); socket.off("available_rooms");
       socket.off("room_created"); socket.off("player_joined"); socket.off("error_event");
-      socket.off("your_cards"); socket.off("game_started"); socket.off("game_over");
-      socket.off("system_message");
+      socket.off("your_cards"); socket.off("game_started"); socket.off("game_over"); socket.off("system_message");
     };
-  }, []);
+  }, [lang]);
 
   const handleCreateRoom = () => {
-    if (!playerName.trim()) return setCustomAlert("Сначала введи свое имя!");
+    if (!playerName.trim()) return showError("Сначала введи свое имя!");
+    setIsLoading(true);
     localStorage.setItem('uno_playerName', playerName); 
     socket.emit('create_room');
   };
 
   const handleJoinRoom = (code: string) => {
-    if (!playerName.trim()) return setCustomAlert("Сначала введи свое имя!");
+    if (!playerName.trim()) return showError("Сначала введи свое имя!");
+    setIsLoading(true);
     localStorage.setItem('uno_playerName', playerName); 
     sessionStorage.setItem('uno_roomId', code); 
-    setRoomId(code);
+    setRoomId(code); 
     socket.emit('join_room', code, playerName, PERSISTENT_ID); 
   };
 
-  const handleJoinManual = () => {
-    const code = window.prompt("Введите код комнаты:"); // Оставляем системный для ввода текста
-    if (code) handleJoinRoom(code);
+  const handleJoinManual = () => { 
+    const code = window.prompt(t.enterCode); 
+    if (code) handleJoinRoom(code); 
   };
 
-  const handleDrawCard = () => {
-    if (currentPlayerTurn !== socket.id) return setCustomAlert("Сейчас не твой ход!");
-    socket.emit('draw_card', roomId);
+  const handleDrawCard = () => { 
+    if (currentPlayerTurn !== socket.id) return showError("Сейчас не твой ход!"); 
+    socket.emit('draw_card', roomId); 
   };
 
-  const handleStartGame = () => socket.emit('start_game', roomId);
-
+  const handleStartGame = () => {
+    setIsLoading(true);
+    socket.emit('start_game', roomId);
+  };
+  
   const handlePlayCard = (index: number) => {
-    if (currentPlayerTurn !== socket.id) return setCustomAlert("Сейчас не твой ход!");
-    const card = myCards[index];
-
-    if (card.color === 'black') {
-      // Открываем красивое окно выбора цвета вместо prompt
-      setColorPicker({ isOpen: true, cardIndex: index });
-      return; 
-    }
-    
+    if (currentPlayerTurn !== socket.id) return showError("Сейчас не твой ход!");
+    if (myCards[index].color === 'black') return setColorPicker({ isOpen: true, cardIndex: index });
     socket.emit('play_card', roomId, index, undefined);
   };
 
-  // ФУНКЦИЯ ДЛЯ ВЫБОРА ЦВЕТА ИЗ ОКНА
   const handleColorSelect = (color: string) => {
     if (colorPicker.cardIndex !== null) {
       socket.emit('play_card', roomId, colorPicker.cardIndex, color);
-      
-      // Автоматически пишем в чат, чтобы все видели выбор!
-      const colorNames: Record<string, string> = { red: 'КРАСНЫЙ ❤️', blue: 'СИНИЙ 💙', green: 'ЗЕЛЕНЫЙ 💚', yellow: 'ЖЕЛТЫЙ 💛' };
-      socket.emit('send_message', {
-        messageId: Math.random().toString(36).substring(2, 9),
-        roomId,
-        senderName: 'Система',
-        text: `Игрок ${playerName} заказал цвет: ${colorNames[color]}`
-      });
+      socket.emit('send_message', { messageId: Math.random().toString(), roomId, senderName: 'Система', text: `Игрок ${playerName} заказал цвет: ${color.toUpperCase()}` });
     }
     setColorPicker({ isOpen: false, cardIndex: null });
   };
 
   const handleCallUno = () => socket.emit('call_uno', roomId);
   const handleCatchUno = () => socket.emit('catch_uno', roomId);
-
+  
   const handleGoHome = () => {
-    if (window.confirm("Вы точно хотите сдаться? Игра закончится для всех.")) {
-      socket.emit('surrender', roomId);
-      sessionStorage.removeItem('uno_roomId');
+    if (window.confirm(t.surrenderConfirm)) {
+      setIsLoading(true);
+      socket.emit('surrender', roomId); 
+      sessionStorage.removeItem('uno_roomId'); 
       window.location.reload(); 
     }
   };
 
   const isJoinedRoom = players.some((p) => p.id === socket.id || p.persistentId === PERSISTENT_ID);
-
-  const backgroundStyle = isGameStarted 
-    ? 'radial-gradient(circle at center, #2e7d32 0%, #1b5e20 100%)' 
-    : '#f4f6f9';
+  const backgroundStyle = isGameStarted ? 'radial-gradient(circle at center, #2e7d32 0%, #1b5e20 100%)' : 'radial-gradient(circle at center, #1e242c 0%, #0b0d10 100%)';
 
   return (
-    <div style={{ 
-      position: 'absolute', top: 0, left: 0, right: 0, 
-      margin: 0, padding: 0, boxSizing: 'border-box', fontFamily: 'sans-serif', 
-      minHeight: '100vh', width: '100vw', background: backgroundStyle, color: isGameStarted ? '#fff' : '#333',
-      transition: 'background 0.5s ease', overflowX: 'hidden', overflowY: 'auto'
-    }}>
+    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, margin: 0, padding: 0, boxSizing: 'border-box', fontFamily: 'sans-serif', minHeight: '100vh', width: '100vw', background: backgroundStyle, color: isGameStarted ? '#fff' : '#333', transition: 'background 0.5s ease', overflowX: 'hidden', overflowY: 'auto' }}>
+      {customAlert && <AlertModal message={customAlert} onClose={() => setCustomAlert(null)} />}
+      {colorPicker.isOpen && <ColorPickerModal onSelect={handleColorSelect} onCancel={() => setColorPicker({isOpen: false, cardIndex: null})} />}
       
-      {/* КРАСИВОЕ МОДАЛЬНОЕ ОКНО ОШИБКИ */}
-      {customAlert && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', zIndex: 100000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: 'white', padding: '30px 40px', borderRadius: '15px', textAlign: 'center', maxWidth: '400px', boxShadow: '0 10px 40px rgba(0,0,0,0.5)', border: '2px solid #dc3545' }}>
-            <h2 style={{ color: '#dc3545', margin: '0 0 15px 0', fontSize: '28px' }}>Внимание!</h2>
-            <p style={{ color: '#333', fontSize: '18px', marginBottom: '25px', fontWeight: 'bold' }}>{customAlert}</p>
-            <button onClick={() => setCustomAlert(null)} style={{ background: '#007BFF', color: 'white', border: 'none', padding: '12px 35px', fontSize: '18px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 4px 10px rgba(0,123,255,0.3)' }}>Понятно</button>
-          </div>
-        </div>
-      )}
-
-      {/* КРАСИВОЕ МОДАЛЬНОЕ ОКНО ВЫБОРА ЦВЕТА */}
-      {colorPicker.isOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.85)', zIndex: 100000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#212529', padding: '40px', borderRadius: '24px', textAlign: 'center', border: '3px solid #ffc107', boxShadow: '0 10px 50px rgba(255,193,7,0.3)' }}>
-            <h2 style={{ color: 'white', margin: '0 0 30px 0', fontSize: '24px', letterSpacing: '1px' }}>Какую масть заказываем?</h2>
-            
-            <div style={{ display: 'flex', gap: '20px', justifyContent: 'center' }}>
-              <button onClick={() => handleColorSelect('red')} style={{ width: '90px', height: '120px', background: '#dc3545', borderRadius: '12px', border: '4px solid white', cursor: 'pointer', transition: 'transform 0.2s', boxShadow: '0 5px 15px rgba(220,53,69,0.5)' }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}></button>
-              <button onClick={() => handleColorSelect('blue')} style={{ width: '90px', height: '120px', background: '#007BFF', borderRadius: '12px', border: '4px solid white', cursor: 'pointer', transition: 'transform 0.2s', boxShadow: '0 5px 15px rgba(0,123,255,0.5)' }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}></button>
-              <button onClick={() => handleColorSelect('green')} style={{ width: '90px', height: '120px', background: '#28a745', borderRadius: '12px', border: '4px solid white', cursor: 'pointer', transition: 'transform 0.2s', boxShadow: '0 5px 15px rgba(40,167,69,0.5)' }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}></button>
-              <button onClick={() => handleColorSelect('yellow')} style={{ width: '90px', height: '120px', background: '#ffc107', borderRadius: '12px', border: '4px solid white', cursor: 'pointer', transition: 'transform 0.2s', boxShadow: '0 5px 15px rgba(255,193,7,0.5)' }} onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}></button>
-            </div>
-
-            <button onClick={() => setColorPicker({isOpen: false, cardIndex: null})} style={{ marginTop: '30px', background: 'transparent', color: '#6c757d', border: '2px solid #6c757d', padding: '10px 30px', fontSize: '16px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>Отменить ход</button>
-          </div>
-        </div>
-      )}
-
       {systemMessage && (
-        <div style={{
-          position: 'fixed', top: '30px', left: '50%', transform: 'translateX(-50%)',
-          background: 'rgba(0, 0, 0, 0.9)', color: 'white', padding: '15px 40px',
-          borderRadius: '50px', fontSize: '20px', fontWeight: 'bold', zIndex: 10000,
-          boxShadow: '0 8px 25px rgba(0,0,0,0.4)', border: '2px solid #fff'
-        }}>
-          {systemMessage}
-        </div>
+        <div style={{ position: 'fixed', top: '30px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(0, 0, 0, 0.9)', color: 'white', padding: '15px 40px', borderRadius: '50px', fontSize: '20px', fontWeight: 'bold', zIndex: 10000, border: '2px solid #fff' }}>{systemMessage}</div>
       )}
 
       {!isGameStarted && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 40px', background: 'white', boxShadow: '0 2px 10px rgba(0,0,0,0.05)' }}>
-          <h1 style={{ margin: 0, color: '#dc3545', fontSize: '28px', fontWeight: '900', letterSpacing: '1px' }}>UNO ONLINE</h1>
-          <span style={{ fontWeight: 'bold', fontSize: '16px', color: isConnected ? '#28a745' : '#dc3545', padding: '8px 15px', background: isConnected ? '#e8f5e9' : '#f8d7da', borderRadius: '20px' }}>
-            {isConnected ? '🟢 Server Online' : '🔴 Server Offline'}
-          </span>
+        <div style={{ 
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', 
+          padding: '20px 40px', background: 'rgba(20, 30, 45, 0.5)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)', borderBottom: '1px solid rgba(255,255,255,0.05)', boxShadow: '0 4px 30px rgba(0, 0, 0, 0.3)' 
+        }}>
+          <img src="/logo.png" alt="UNO Logo" style={{ height: '50px', transform: 'scale(6.2)', transformOrigin: 'left center', objectFit: 'contain', filter: 'drop-shadow(0 0 10px rgba(255, 165, 0, 0.3))' }} />
+          
+          <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '5px', background: 'rgba(0,0,0,0.3)', padding: '5px', borderRadius: '12px' }}>
+              {(['ru', 'en', 'cs'] as Language[]).map(l => (
+                <button 
+                  key={l} 
+                  onClick={() => setLang(l)} 
+                  style={{ background: lang === l ? 'rgba(255,255,255,0.2)' : 'transparent', border: 'none', color: 'white', padding: '5px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', textTransform: 'uppercase', transition: '0.3s' }}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            <span style={{ fontWeight: 'bold', fontSize: '14px', textTransform: 'uppercase', letterSpacing: '1px', color: isConnected ? '#4dd46b' : '#ff6b6b', padding: '10px 20px', background: isConnected ? 'rgba(40,167,69,0.1)' : 'rgba(220,53,69,0.1)', border: isConnected ? '1px solid rgba(40,167,69,0.3)' : '1px solid rgba(220,53,69,0.3)', borderRadius: '20px', boxShadow: '0 4px 15px rgba(0,0,0,0.2)' }}>
+              {isConnected ? t.serverOnline : t.serverOffline}
+            </span>
+          </div>
         </div>
       )}
 
       <div style={{ padding: isGameStarted ? '0' : '40px' }}>
-        
         {!isJoinedRoom ? (
-          // ==========================================
-          // ЭКРАН 1: ГЛАВНОЕ МЕНЮ
-          // ==========================================
-          <div style={{ display: 'flex', gap: '40px', maxWidth: '1200px', margin: '0 auto', alignItems: 'flex-start' }}>
-            <div style={{ flex: '1', background: 'white', padding: '40px', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.08)' }}>
-              <h2 style={{ marginTop: 0, fontSize: '28px', color: '#212529', marginBottom: '30px' }}>Подключение к игре</h2>
-              <div style={{ marginBottom: '30px' }}>
-                <label style={{ display: 'block', marginBottom: '10px', fontWeight: 'bold', color: '#495057', fontSize: '16px' }}>Ваш никнейм:</label>
-                <input 
-                  placeholder="Введите имя..." value={playerName} onChange={(e) => setPlayerName(e.target.value)} 
-                  style={{ width: '100%', padding: '15px', fontSize: '18px', borderRadius: '8px', border: '2px solid #e9ecef', boxSizing: 'border-box', outline: 'none' }}
-                />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                <button onClick={handleCreateRoom} style={{ padding: '18px', fontSize: '18px', fontWeight: 'bold', background: '#007BFF', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,123,255,0.3)' }}>➕ Создать новую комнату</button>
-                <button onClick={handleJoinManual} style={{ padding: '18px', fontSize: '18px', fontWeight: 'bold', background: '#6c757d', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>🔑 Войти по коду вручную</button>
-              </div>
-            </div>
-
-            <div style={{ flex: '1', background: 'white', padding: '40px', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.08)', minHeight: '400px' }}>
-              <h2 style={{ marginTop: 0, fontSize: '28px', color: '#212529', marginBottom: '30px' }}>Открытые комнаты</h2>
-              {availableRooms.length === 0 ? (
-                <div style={{ padding: '40px 20px', textAlign: 'center', background: '#f8f9fa', borderRadius: '8px', color: '#adb5bd', fontSize: '18px', border: '2px dashed #dee2e6' }}>Сейчас нет активных игр.</div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', maxHeight: '500px', overflowY: 'auto', paddingRight: '10px' }}>
-                  {availableRooms.map((room) => (
-                    <div key={room.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: '10px' }}>
-                      <div>
-                        <div style={{ fontSize: '20px', color: '#212529', fontWeight: 'bold', marginBottom: '5px' }}>Комната: {room.id}</div>
-                        <div style={{ fontSize: '15px', color: '#6c757d' }}>Игроков внутри: <b>{room.playersCount}</b></div>
-                      </div>
-                      <button onClick={() => handleJoinRoom(room.id)} style={{ background: '#28a745', color: 'white', border: 'none', padding: '12px 25px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}>Войти</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
+          <MainMenu playerName={playerName} setPlayerName={setPlayerName} handleCreateRoom={handleCreateRoom} handleJoinManual={handleJoinManual} availableRooms={availableRooms} handleJoinRoom={handleJoinRoom} t={t} />
         ) : !isGameStarted ? (
-          // ==========================================
-          // ЭКРАН 2: ЛОББИ КОМНАТЫ
-          // ==========================================
-          <div style={{ maxWidth: '900px', margin: '0 auto', background: 'white', padding: '50px', borderRadius: '16px', boxShadow: '0 10px 40px rgba(0,0,0,0.1)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f8f9fa', paddingBottom: '20px', marginBottom: '30px' }}>
-              <h2 style={{ margin: 0, fontSize: '32px', color: '#212529' }}>Ожидание игроков</h2>
-              <div style={{ background: '#e9ecef', padding: '10px 20px', borderRadius: '8px', fontSize: '20px', color: '#495057' }}>
-                Код комнаты: <b style={{ color: '#007BFF', fontSize: '26px', marginLeft: '10px', letterSpacing: '2px' }}>{roomId}</b>
-              </div>
-            </div>
-            
-            <div style={{ display: 'flex', gap: '40px' }}>
-              <div style={{ flex: '2' }}>
-                <h3 style={{ color: '#6c757d', marginBottom: '15px', fontSize: '20px' }}>Список участников ({players.length}):</h3>
-                <div style={{ background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: '12px', padding: '10px' }}>
-                  {players.map((p) => (
-                    <div key={p.id} style={{ padding: '15px 20px', fontSize: '20px', borderBottom: '1px solid #e9ecef', display: 'flex', alignItems: 'center', color: '#212529', opacity: p.isOffline ? 0.5 : 1 }}>
-                      <span style={{ fontSize: '24px', marginRight: '15px' }}>{p.isOffline ? '👻' : '👤'}</span>
-                      <span style={{ fontWeight: p.id === socket.id ? 'bold' : 'normal', flex: 1 }}>{p.name} {p.id === socket.id ? '(Вы)' : ''} {p.isOffline ? ' [Отключился]' : ''}</span>
-                      {p.id === hostId && <span style={{ background: '#ffc107', color: '#000', fontSize: '12px', padding: '4px 10px', borderRadius: '12px', fontWeight: 'bold' }}>ХОСТ</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div style={{ flex: '1', display: 'flex', flexDirection: 'column', gap: '20px', justifyContent: 'center' }}>
-                {socket.id === hostId ? (
-                  <button onClick={handleStartGame} disabled={players.length < 2} style={{ padding: '20px', fontSize: '20px', background: players.length < 2 ? '#6c757d' : '#28a745', color: 'white', fontWeight: 'bold', border: 'none', borderRadius: '12px', cursor: players.length < 2 ? 'not-allowed' : 'pointer' }}>▶ Начать игру</button>
-                ) : (
-                  <div style={{ padding: '20px', fontSize: '18px', textAlign: 'center', color: '#856404', background: '#fff3cd', borderRadius: '12px', border: '2px solid #ffeeba', fontWeight: 'bold' }}>⏳ Ждем запуска хостом...</div>
-                )}
-                <button onClick={handleGoHome} style={{ padding: '15px', fontSize: '18px', background: 'transparent', color: '#dc3545', border: '2px solid #dc3545', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}>Покинуть комнату</button>
-              </div>
-            </div>
-          </div>
-
+          <Lobby roomId={roomId} players={players} hostId={hostId} socketId={socket.id} handleStartGame={handleStartGame} handleGoHome={handleGoHome} t={t} />
         ) : winner ? (
-          // ==========================================
-          // ЭКРАН 3: ЭКРАН ПОБЕДЫ
-          // ==========================================
-          <div style={{ textAlign: 'center', marginTop: '15vh' }}>
-            <h1 style={{ fontSize: '80px', color: '#ffd700', textShadow: '0 5px 15px rgba(0,0,0,0.5)', margin: '0 0 20px 0' }}>🏆 ПОБЕДА! 🏆</h1>
-            <h2 style={{ fontSize: '40px', color: '#fff', margin: '0 0 40px 0' }}>Победитель: <b style={{ background: '#fff', color: '#212529', padding: '5px 20px', borderRadius: '10px' }}>{winner}</b></h2>
-            <button onClick={() => window.location.reload()} style={{ padding: '20px 40px', fontSize: '24px', fontWeight: 'bold', background: '#007BFF', color: '#fff', border: 'none', borderRadius: '12px', cursor: 'pointer', boxShadow: '0 8px 25px rgba(0,123,255,0.5)' }}>В главное меню</button>
-          </div>
-
+          <VictoryScreen winner={winner} t={t} />
         ) : (
-          // ==========================================
-          // ЭКРАН 4: ИГРОВОЙ СТОЛ
-          // ==========================================
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '20px', boxSizing: 'border-box', position: 'relative' }}>
-            
-            <button onClick={handleGoHome} style={{ position: 'absolute', top: '20px', left: '20px', background: 'rgba(220,53,69,0.8)', color: 'white', border: '2px solid #fff', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px', zIndex: 50 }}>🏳️ Сдаться</button>
-
-            {/* ВЕРХНЯЯ ЗОНА: ОППОНЕНТЫ */}
-            <div style={{ flex: '0 0 auto', display: 'flex', justifyContent: 'center', gap: '30px', paddingTop: '10px' }}>
-              {players.map((p) => (
-                <div key={p.id} style={{
-                  padding: '15px 30px', borderRadius: '12px',
-                  background: p.id === currentPlayerTurn ? '#ffeb3b' : 'rgba(255,255,255,0.1)',
-                  color: p.id === currentPlayerTurn ? '#000' : '#fff',
-                  fontWeight: 'bold', border: '2px solid ' + (p.id === socket.id ? '#fff' : 'rgba(255,255,255,0.3)'),
-                  boxShadow: p.id === currentPlayerTurn ? '0 0 30px rgba(255,235,59,0.6)' : 'none',
-                  fontSize: '20px', display: 'flex', alignItems: 'center', gap: '10px',
-                  opacity: p.isOffline ? 0.5 : 1
-                }}>
-                  {p.isOffline ? '👻' : '👤'} {p.name} {p.id === socket.id ? '(Вы)' : ''} {p.isOffline ? '[АФК]' : ''}
-                </div>
-              ))}
-            </div>
-
-            {/* ЦЕНТРАЛЬНАЯ ЗОНА */}
-            <div style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: '20px' }}>
-              
-              {/* ВИЗУАЛЬНЫЙ ТАЙМЕР */}
-              {turnEndTime && (
-                <div style={{ 
-                  background: timeLeft <= 5 ? '#dc3545' : '#ffc107', 
-                  color: timeLeft <= 5 ? 'white' : 'black', 
-                  padding: '10px 30px', borderRadius: '30px', fontSize: '24px', fontWeight: 'bold', 
-                  boxShadow: timeLeft <= 5 ? '0 0 20px rgba(220,53,69,0.8)' : '0 4px 10px rgba(0,0,0,0.3)',
-                  transition: 'all 0.3s', zIndex: 10
-                }}>
-                  ⏳ Время на ход: {timeLeft} сек.
-                </div>
-              )}
-
-              <div style={{ display: 'flex', gap: '80px', alignItems: 'center' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                   {myCards.length <= 2 && (
-                    <button onClick={handleCallUno} style={{ background: '#fd7e14', color: 'white', padding: '20px 40px', fontWeight: '900', fontSize: '24px', border: '3px solid #fff', borderRadius: '12px', cursor: 'pointer', boxShadow: '0 10px 30px rgba(253,126,20,0.6)', transform: 'rotate(-5deg)' }}>
-                      КРИЧАТЬ "УНО!"
-                    </button>
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', gap: '40px', background: 'rgba(0,0,0,0.2)', padding: '40px 60px', borderRadius: '24px', border: '2px solid rgba(255,255,255,0.1)', boxShadow: 'inset 0 0 50px rgba(0,0,0,0.5)' }}>
-                  {/* Сброс (Карта на столе) */}
-                  <div>
-                    <h3 style={{ textAlign: 'center', margin: '0 0 15px 0', color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', letterSpacing: '2px' }}>На столе</h3>
-                    {topCard ? (
-                      <img 
-                        src={getCardImage(topCard)} 
-                        alt={`${topCard.color} ${topCard.value}`} 
-                        style={{ 
-                          width: '120px', height: '180px', borderRadius: '16px', 
-                          boxShadow: '0 15px 35px rgba(0,0,0,0.5)', objectFit: 'contain' 
-                        }} 
-                        onError={(e) => (e.currentTarget.src = "/cards/back.jpg")}
-                      />
-                    ) : (
-                      <div style={{ width: '120px', height: '180px', border: '4px dashed rgba(255,255,255,0.3)', borderRadius: '16px' }}></div>
-                    )}
-                  </div>
-
-                  {/* Колода */}
-                  <div>
-                    <h3 style={{ textAlign: 'center', margin: '0 0 15px 0', color: 'rgba(255,255,255,0.7)', textTransform: 'uppercase', letterSpacing: '2px' }}>Колода</h3>
-                    <img 
-                      onClick={handleDrawCard}
-                      src="/cards/back.jpg" 
-                      alt="Колода" 
-                      style={{ 
-                        width: '120px', height: '180px', cursor: 'pointer', borderRadius: '16px', 
-                        boxShadow: '0 15px 35px rgba(0,0,0,0.5)', transition: 'transform 0.2s', objectFit: 'contain'
-                      }} 
-                      onMouseOver={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
-                      onMouseOut={(e) => e.currentTarget.style.transform = 'scale(1)'}
-                    />
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                   <button onClick={handleCatchUno} style={{ background: '#dc3545', color: 'white', padding: '20px 40px', fontWeight: '900', fontSize: '20px', border: '3px solid #fff', borderRadius: '12px', cursor: 'pointer', boxShadow: '0 10px 30px rgba(220,53,69,0.6)', transform: 'rotate(5deg)' }}>
-                    ПОЙМАТЬ<br/>НАРУШИТЕЛЯ
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* НИЖНЯЯ ЗОНА: РУКА ИГРОКА */}
-            <div style={{ flex: '0 0 auto', padding: '20px', background: 'rgba(0,0,0,0.4)', borderRadius: '24px 24px 0 0', borderTop: '2px solid rgba(255,255,255,0.1)', width: '100%', maxWidth: '1400px', margin: '0 auto' }}>
-              <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                {myCards.map((card, index) => (
-                  <img 
-                    key={index} 
-                    onClick={() => handlePlayCard(index)} 
-                    src={getCardImage(card)}
-                    alt={`${card.color} ${card.value}`}
-                    style={{ 
-                      width: '100px', cursor: 'pointer', transition: 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)', 
-                      boxShadow: '0 5px 15px rgba(0,0,0,0.4)', borderRadius: '12px', objectFit: 'contain'
-                    }}
-                    onMouseOver={(e) => { 
-                      e.currentTarget.style.transform = 'translateY(-30px) scale(1.1)'; 
-                      e.currentTarget.style.zIndex = '10'; 
-                      e.currentTarget.style.boxShadow = '0 20px 40px rgba(0,0,0,0.6)'; 
-                    }}
-                    onMouseOut={(e) => { 
-                      e.currentTarget.style.transform = 'translateY(0) scale(1)'; 
-                      e.currentTarget.style.zIndex = '1'; 
-                      e.currentTarget.style.boxShadow = '0 5px 15px rgba(0,0,0,0.4)'; 
-                    }}
-                    onError={(e) => (e.currentTarget.src = "/cards/back.jpg")}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
+          <GameBoard turnEndTime={turnEndTime} timeLeft={timeLeft} myCards={myCards} topCard={topCard} players={players} currentPlayerTurn={currentPlayerTurn} socketId={socket.id} handleCallUno={handleCallUno} handleCatchUno={handleCatchUno} handleDrawCard={handleDrawCard} handlePlayCard={handlePlayCard} handleGoHome={handleGoHome} t={t} />
         )}
       </div>
 
-      {isJoinedRoom && <Chat socket={socket} roomId={roomId} playerName={playerName} onError={setCustomAlert} />}
+      {isJoinedRoom && <Chat socket={socket} roomId={roomId} playerName={playerName} onError={showError} t={t} />}
+      <LoadingScreen isVisible={isLoading} />
     </div>
   );
 }

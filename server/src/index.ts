@@ -181,6 +181,16 @@ io.on('connection', (socket: CustomSocket) => {
       try {
         game.playCard(socket.id, cardIndex, declaredColor);
 
+        // --- НОВАЯ ФИШКА: ОПОВЕЩЕНИЕ О 2 КАРТАХ ---
+        // Ищем игрока, который только что сделал ход
+        const currentPlayer = game.players.find(p => p.id === socket.id);
+        // Если у него после хода осталось ровно 2 карты:
+        if (currentPlayer && currentPlayer.hand.length === 2) {
+          // Рассылаем всем в комнате системное сообщение
+          io.to(roomId).emit('system_message', `⚠️ Внимание! У игрока ${currentPlayer.name} осталось всего 2 карты!`);
+        }
+        // ------------------------------------------
+
         // Рассылаем состояние...
         io.to(roomId).emit('game_started', {
           topCard: game.discardPile[game.discardPile.length - 1]!,
@@ -195,13 +205,11 @@ io.on('connection', (socket: CustomSocket) => {
         if (game.winner) {
           io.to(roomId).emit('game_over', game.winner.name);
           
-          // Сразу убираем из списка доступных, чтобы никто не пытался зайти
           broadcastRooms(); 
 
-          // Удаляем саму комнату через 3 секунды, чтобы сокеты успели закрыться штатно
           setTimeout(() => {
             game.stopTimer();
-            roomManager.deleteRoom(roomId);
+            roomManager.rooms.delete(roomId);
           }, 3000); 
         }
       } catch (err: any) {
